@@ -1,0 +1,13 @@
+# store and check out text files with LF, regardless of core.autocrlf
+* text=auto eol=lf
+
+# Windows scripts need CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# never touch binary files
+*.pdf binary
+*.png binary
+*.jpg binary
+*.docx binary
