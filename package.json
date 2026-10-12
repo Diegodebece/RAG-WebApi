@@ -1,0 +1,20 @@
+{
+    "name": "rag-web-api",
+    "version": "0.1.0",
+    "description": "Self-hosted RAG API: upload a document, ask questions, get cited answers.",
+    "private": true,
+    "type": "module",
+    "engines": {
+        "node": ">=22.18"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc -p tsconfig.test.json",
+        "test": "node --import tsx --test \"test/**/*.test.ts\""
+    },
+    "devDependencies": {
+        "@types/node": "^22.20.5",
+        "tsx": "^4.23.15",
+        "typescript": "^7.0.2"
+    }
+}
