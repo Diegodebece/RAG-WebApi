@@ -25,7 +25,7 @@ description: How to write Express controllers. Use when creating or editing any 
 - Signature is always `export const name = async (req: Request, res: Response, next: NextFunction) => { ... };`, with `import type { Request, Response, NextFunction } from "express";`. Let TypeScript infer the return type.
 - The whole body is wrapped in `try { ... } catch (error) { next(error); }`. No exceptions, even for one-liners.
 - Inputs come only from:
-  - `req.params` (ids, converted with `Number(req.params.id)` for numeric ids), `req.query` (`page`, `limit`, filters),
+  - `req.params` (ids are UUID strings: `const { id } = req.params;`, passed as they are). A handler that reads params declares them in its signature, `req: Request<{ id: string }>`; with a plain `Request`, Express 5 types each param as `string | string[]`. `req.query` (`page`, `limit`, filters),
   - `req.validatedBody` (**never** `req.body`), cast to the input type exported by the validator: `req.validatedBody as CreateProductInput`,
   - `req.decoded` (logged-in user: `id`, `role`, ...). It is optional in the type; in routers mounted in the protected section use `req.decoded!.id`.
 - Pass plain values to the service, never `req` or `res`. When ownership matters, pass the user id as the first argument: `createWatchlistItemService(req.decoded!.id, req.validatedBody as CreateWatchlistItemInput)`.

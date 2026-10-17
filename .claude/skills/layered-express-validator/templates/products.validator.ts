@@ -5,7 +5,7 @@ export interface CreateProductInput {
     description?: string;
     price: number;
     status?: "active" | "inactive";
-    categoryId: number;
+    categoryId: string;
 }
 
 export type UpdateProductInput = Partial<CreateProductInput>;
@@ -31,10 +31,9 @@ export const createProductSchema = Joi.object<CreateProductInput>({
     status: Joi.string().valid("active", "inactive").messages({
         "any.only": "Status must be 'active' or 'inactive'"
     }),
-    categoryId: Joi.number().integer().positive().required().messages({
-        "number.base": "Category id must be a number",
-        "number.integer": "Category id must be an integer",
-        "number.positive": "Category id must be positive",
+    categoryId: Joi.string().guid({ version: "uuidv4" }).required().messages({
+        "string.base": "Category id must be a string",
+        "string.guid": "Category id must be a valid UUID",
         "any.required": "Category id is required"
     })
 });

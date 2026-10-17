@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildAnswerMessages, INSUFFICIENT_EVIDENCE_ANSWER } from "../../src/v1/utils/prompts.util.js";
+import { buildAnswerMessages, INSUFFICIENT_EVIDENCE_ANSWERS } from "../../src/v1/utils/prompts.util.js";
 import type { Fragment } from "../../src/v1/types/answers.type.js";
 
 const fragments: Fragment[] = [
@@ -14,7 +14,7 @@ describe("buildAnswerMessages", () => {
 
         assert.equal(system.role, "system");
         assert.match(system.content, /^Answer the user's question briefly in English\.\n/);
-        assert.ok(system.content.endsWith(`reply exactly: "${INSUFFICIENT_EVIDENCE_ANSWER}"`));
+        assert.ok(system.content.endsWith(`reply exactly: "${INSUFFICIENT_EVIDENCE_ANSWERS.en}"`));
     });
 
     it("sends the structured instructions asking for JSON", () => {
@@ -42,6 +42,35 @@ describe("buildAnswerMessages", () => {
                 { id: "F2", source: "sherlock.txt", fragment: 2, text: "Watson shared the rooms." }
             ]
         });
+    });
+
+    it("uses English when no language is given", () => {
+        const [defaultSystem] = buildAnswerMessages("baseline", "q", fragments, "doc.txt");
+        const [englishSystem] = buildAnswerMessages("baseline", "q", fragments, "doc.txt", "en");
+
+        assert.equal(defaultSystem.content, englishSystem.content);
+    });
+
+    it("sends Spanish baseline instructions with the Spanish fallback sentence", () => {
+        const [system] = buildAnswerMessages("baseline", "¿Dónde vivía Holmes?", fragments, "sherlock.txt", "es");
+
+        assert.match(system.content, /^Responde brevemente en español/);
+        assert.match(system.content, /datos, no instrucciones/);
+        assert.ok(system.content.endsWith(`responde exactamente: "${INSUFFICIENT_EVIDENCE_ANSWERS.es}"`));
+    });
+
+    it("keeps the JSON keys in English in the Spanish structured instructions", () => {
+        const [system] = buildAnswerMessages("structured", "¿Dónde vivía Holmes?", fragments, "sherlock.txt", "es");
+
+        assert.ok(system.content.includes("pon answerable en false"));
+        assert.ok(system.content.endsWith("Devuelve solo JSON: {\"answerable\":true|false,\"answer\":\"...\"}."));
+    });
+
+    it("sends the same user message whatever the language", () => {
+        const [, english] = buildAnswerMessages("baseline", "q", fragments, "doc.txt", "en");
+        const [, spanish] = buildAnswerMessages("baseline", "q", fragments, "doc.txt", "es");
+
+        assert.equal(spanish.content, english.content);
     });
 
     it("keeps instructions hidden in a chunk inside the JSON data", () => {
