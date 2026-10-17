@@ -53,10 +53,10 @@ const {
     startJobWorkerService,
     stopJobWorkerService
 } = await import("../../src/v1/services/jobQueue.service.js");
-const { subscribeToJobEvents } = await import("../../src/v1/services/jobEvents.service.js");
+const { subscribeToEvents } = await import("../../src/v1/services/events.service.js");
 const { AppError } = await import("../../src/v1/utils/appError.util.js");
 const { ModelUnavailableError } = await import("../../src/v1/utils/modelUnavailableError.util.js");
-type JobEvent = import("../../src/v1/types/jobs.type.js").JobEvent;
+type LiveEvent = import("../../src/v1/types/events.type.js").LiveEvent;
 
 // 25 chunks of about 1,000 characters: three batches of 10, 10 and 5
 const longText = (label: string) => Array.from({ length: 25 }, (_, index) => `${label} part ${index}. ${"word ".repeat(195)}`).join(" ");
@@ -73,7 +73,15 @@ const status = async (jobId: string) => {
     return row;
 };
 
-let events: JobEvent[] = [];
+let events: LiveEvent[] = [];
+
+// waits until the events received so far pass the check (events sent in the background arrive a moment later)
+const waitForEvents = async (check: (received: LiveEvent[]) => boolean): Promise<void> => {
+    for (let attempt = 0; attempt < 100 && !check(events); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(check(events), `events received: ${JSON.stringify(events)}`);
+};
 let unsubscribe: () => void = () => {};
 
 before(resetTestDatabase);
@@ -84,7 +92,7 @@ beforeEach(async () => {
     batches = [];
     beforeAnswer = null;
     events = [];
-    unsubscribe = subscribeToJobEvents((event) => events.push(event));
+    unsubscribe = subscribeToEvents((event) => events.push(event));
 });
 
 afterEach(() => {
@@ -111,19 +119,46 @@ describe("processQueuedJobsService", () => {
         assert.deepEqual((await getJobByIdService(userId, jobId)).progress, { done: 25, total: 25 });
     });
 
-    it("reports started, progress after each batch, and done", async () => {
+    it("reports the place in line, started, progress after each batch, and done", async () => {
         const userId = await createUser("ana@example.com");
         const { document, jobId } = await createDocumentService(userId, { filename: "long.txt", text: longText("ana") });
+        await waitForEvents((received) => received.length === 1);
 
         await processQueuedJobsService();
 
         assert.deepEqual(events, [
+            { type: "queued", jobId, userId, position: 1 },
             { type: "started", jobId, userId },
             { type: "progress", jobId, userId, done: 10, total: 25 },
             { type: "progress", jobId, userId, done: 20, total: 25 },
             { type: "progress", jobId, userId, done: 25, total: 25 },
             { type: "done", jobId, userId, documentId: document.id }
         ]);
+    });
+
+    it("tells every waiting job its new place each time the line moves", async () => {
+        const users = await Promise.all(["a@example.com", "b@example.com", "c@example.com"].map(createUser));
+        const jobs: string[] = [];
+
+        for (const userId of users) {
+            jobs.push((await createDocumentService(userId, { filename: "short.txt", text: "A short text." })).jobId);
+            await waitForEvents((received) => received.filter((event) => event.type === "queued").length === (jobs.length * (jobs.length + 1)) / 2);
+        }
+
+        await processQueuedJobsService();
+
+        const positions = events.flatMap((event) => (event.type === "queued" ? [[jobs.indexOf(event.jobId), event.position]] : []));
+        assert.deepEqual(positions, [
+            // after each upload, every queued job hears its place
+            [0, 1],
+            [0, 1], [1, 2],
+            [0, 1], [1, 2], [2, 3],
+            // the worker takes the first job: the others move up
+            [1, 1], [2, 2],
+            // then the second
+            [2, 1]
+        ]);
+        assert.ok(events.every((event) => event.userId === users[jobs.indexOf("jobId" in event ? event.jobId : "")]), "each event goes to the owner of its job");
     });
 
     it("continues where it stopped: chunks that already have a vector are not sent again", async () => {
@@ -205,7 +240,7 @@ describe("processQueuedJobsService", () => {
 
     it("keeps going when an event listener throws", async (t) => {
         t.mock.method(console, "error", () => {});
-        const unsubscribeBroken = subscribeToJobEvents(() => {
+        const unsubscribeBroken = subscribeToEvents(() => {
             throw new Error("broken listener");
         });
         const userId = await createUser("ana@example.com");

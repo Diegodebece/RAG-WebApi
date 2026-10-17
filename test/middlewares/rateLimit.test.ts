@@ -124,7 +124,7 @@ describe("per-user limit", () => {
             const userId = req.header("X-Test-User");
 
             if (userId) {
-                req.decoded = { id: userId, role: "user" };
+                req.decoded = { id: userId, role: "user", expiresAt: Date.now() + 60_000 };
             }
 
             next();

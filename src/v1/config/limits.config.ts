@@ -67,6 +67,14 @@ export const MAX_WAITING_QUESTIONS = readPositiveInteger("MAX_WAITING_QUESTIONS"
 // about 60 Word pages; checked on the text the browser sends, before it is cleaned
 export const MAX_DOCUMENT_CHARS = readPositiveInteger("MAX_DOCUMENT_CHARS", 200000);
 
+// open event streams (GET /v1/events) per user, for example two browser tabs, and for all users together
+export const MAX_EVENT_STREAMS_PER_USER = readPositiveInteger("MAX_EVENT_STREAMS_PER_USER", 2);
+
+export const MAX_EVENT_STREAMS = readPositiveInteger("MAX_EVENT_STREAMS", 30);
+
+// an event stream sends a comment this often, so proxies and the browser do not close an idle connection
+export const EVENT_STREAM_HEARTBEAT_SECONDS = readPositiveInteger("EVENT_STREAM_HEARTBEAT_SECONDS", 25);
+
 // queued and running jobs of all users together; one Ollama job runs at a time
 export const MAX_QUEUED_JOBS = readPositiveInteger("MAX_QUEUED_JOBS", 20);
 

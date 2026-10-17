@@ -1,4 +1,5 @@
 import { pool } from "../config/db.config.js";
+import { emitEvent } from "./events.service.js";
 import { runIndexingJobService } from "./indexing.service.js";
 import type { ClaimedJob } from "../types/jobs.type.js";
 
@@ -19,6 +20,16 @@ const claimNextJob = async (): Promise<ClaimedJob | null> => {
     return rows[0] ?? null;
 };
 
+// Tells the owner of every queued indexing job its place in line (1 = it runs next), in the order the worker
+// takes them. Called whenever the line changes: after an upload, when the worker takes a job, and when a job
+// goes back to the queue. There are at most MAX_QUEUED_JOBS of them.
+const emitQueuePositions = async (): Promise<void> => {
+    const { rows } = await pool.query<{ id: string; userId: string }>(
+        `SELECT id, user_id AS "userId" FROM jobs WHERE status = 'queued' AND type = 'index_document' ORDER BY created_at, id`
+    );
+    rows.forEach((job, index) => emitEvent({ type: "queued", jobId: job.id, userId: job.userId, position: index + 1 }));
+};
+
 let draining: Promise<void> | null = null;
 let workerStarted = false;
 let pollTimer: NodeJS.Timeout | null = null;
@@ -35,7 +46,16 @@ export const processQueuedJobsService = async (): Promise<void> => {
             while (true) {
                 const job = await claimNextJob();
 
-                if (!job || (await runIndexingJobService(job)) === "requeued") {
+                if (!job) {
+                    return;
+                }
+
+                // every job still waiting moved up one place
+                await emitQueuePositions();
+
+                if ((await runIndexingJobService(job)) === "requeued") {
+                    // the job is back at the front of the line
+                    await emitQueuePositions();
                     return;
                 }
             }
@@ -57,11 +77,22 @@ const runQueueInBackground = async (): Promise<void> => {
     }
 };
 
-// Called after an upload. Does nothing until the worker is started (by server.ts), so tests and scripts
-// that import the app never start indexing on their own.
+const emitQueuePositionsInBackground = async (): Promise<void> => {
+    try {
+        await emitQueuePositions();
+    } catch (error) {
+        console.error("Could not send the queue positions", error);
+    }
+};
+
+// Called after an upload. An idle worker takes the new job at once (and sends the positions itself); while it
+// is busy, or before server.ts starts it, the new job waits, so its owner is told its place in line. Tests and
+// scripts that import the app never start indexing on their own.
 export const notifyJobQueuedService = (): void => {
-    if (workerStarted) {
+    if (workerStarted && !draining) {
         void runQueueInBackground();
+    } else {
+        void emitQueuePositionsInBackground();
     }
 };
 

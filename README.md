@@ -71,6 +71,7 @@ All paths start with `/v1`. Protected endpoints need the header `Authorization: 
 | `DELETE /documents/:id` | Protected | Deletes one of your documents |
 | `POST /documents/:id/ask` | Protected | Answers `{ question, mode?, language? }` about one of your ready documents with `{ status, answer, citations, sources, timings }`. `mode` is `baseline` (default) or `structured`, `language` `en` (default) or `es`. 10 questions per minute and 30 per day; the answer comes in the response, after waiting at most 60 seconds for the model |
 | `GET /jobs/:id` | Protected | Returns a job's status, its position in the queue and its progress (chunks embedded out of the total) |
+| `GET /events` | Protected | A stream of your live events (Server-Sent Events): your documents' place in the indexing queue and their progress, and your question's place in line while it waits for the model. Read it with `fetch()` and the `Authorization` header; at most 2 streams per user, and a stream ends when its token expires |
 
 Successful responses look like `{ success: true, message, data }`; errors look like `{ message }`, with `details` for validation errors.
 

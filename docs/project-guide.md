@@ -15,11 +15,12 @@ Contents:
 9. [Authentication layer](#9-authentication-layer)
 10. [Documents layer](#10-documents-layer)
 11. [Questions layer](#11-questions-layer)
-12. [Local environment](#12-local-environment)
-13. [Agreed limits](#13-agreed-limits)
-14. [Security review](#14-security-review)
-15. [Second review: security and architecture](#15-second-review-security-and-architecture)
-16. [Pending work](#16-pending-work)
+12. [Live events layer](#12-live-events-layer)
+13. [Local environment](#13-local-environment)
+14. [Agreed limits](#14-agreed-limits)
+15. [Security review](#15-security-review)
+16. [Second review: security and architecture](#16-second-review-security-and-architecture)
+17. [Pending work](#17-pending-work)
 
 ## 1. Origin and goal
 
@@ -345,7 +346,7 @@ The first endpoints. `src/app.ts` builds the app (security headers, CORS, the `/
 
 `v1.routes.ts` mounts the public routers first, then `authenticateMiddleware`, then the protected ones. Everything after that line needs a token, including paths that do not exist: without a token an unknown `/v1` path answers 401, with one it answers 404, so anonymous clients learn nothing about which routes exist.
 
-Registering trims and lowercases the email, rejects one that is already taken (409), hashes the password and returns the new user with a token. Logging in looks the user up by email, verifies the password and returns the user with a token. The token carries `{ id, role }`, is signed with `SECRET_KEY` using HS256 and expires after 1 hour; signing and verifying both live in `utils/token.util.ts`. Tests in `test/routes/` call the real app with `supertest` against the test database; `health.test.ts` uses a fake Ollama so it does not depend on the real one.
+Registering trims and lowercases the email, rejects one that is already taken (409), hashes the password and returns the new user with a token. Logging in looks the user up by email, verifies the password and returns the user with a token. The token carries `{ id, role }`, is signed with `SECRET_KEY` using HS256 and expires after 1 hour (a token without an expiry is rejected); signing and verifying both live in `utils/token.util.ts`. Tests in `test/routes/` call the real app with `supertest` against the test database; `health.test.ts` uses a fake Ollama so it does not depend on the real one.
 
 > [!NOTE]
 > **Decision: scrypt hashes that carry their own parameters.** Passwords are hashed with Node's built-in `crypto.scrypt` (as the brief proposed), with a random 16-byte salt, and stored as `scrypt$N$r$p$salt$hash`. Because the cost parameters travel with each hash, they can be raised later without breaking existing passwords. Verification uses `timingSafeEqual`, which takes the same time whichever byte differs.
@@ -391,7 +392,7 @@ Uploading stores a document and queues its indexing; computing the embeddings is
 | `DELETE /v1/documents/:id` | Deletes it; its chunks and jobs go with it |
 | `GET /v1/jobs/:id` | The job's status and its position in the queue, for polling until indexing finishes |
 
-An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), when they already uploaded 3 documents in the last 24 hours, deleted ones included (429, see [section 15](#15-second-review-security-and-architecture)), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` reports `usage.documents` and `usage.uploadsToday` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours, and upload and question records older than the daily window.
+An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), when they already uploaded 3 documents in the last 24 hours, deleted ones included (429, see [section 16](#16-second-review-security-and-architecture)), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` reports `usage.documents` and `usage.uploadsToday` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours, and upload and question records older than the daily window.
 
 > [!NOTE]
 > **Decision: 202 Accepted for uploads.** The skills answer creations with 201, but an uploaded document cannot be used until its embeddings exist; 202 says exactly that, and the brief specified it. The client polls `GET /v1/jobs/:id` (and later listens to the event stream) to know when it is ready.
@@ -416,9 +417,9 @@ An upload is refused when the user already has 3 documents (409), when another o
 
 ### Part B: the indexing queue
 
-Three services share the work, all in `src/v1/services/`: `jobQueue.service.ts` takes the queued jobs one at a time inside the API process, `indexing.service.ts` runs one job and `jobEvents.service.ts` delivers its events; `ollama.service.ts` talks to Ollama. For each job the worker marks the document `indexing`, embeds the chunks that still have no vector in batches of 10, stores each batch with one `UPDATE`, and finally marks the document `ready` and the job `done`. `GET /v1/jobs/:id` reports `progress` (chunks with a vector out of the total) for polling.
+Three services share the work, all in `src/v1/services/`: `jobQueue.service.ts` takes the queued jobs one at a time inside the API process, `indexing.service.ts` runs one job and `events.service.ts` delivers its events; `ollama.service.ts` talks to Ollama. For each job the worker marks the document `indexing`, embeds the chunks that still have no vector in batches of 10, stores each batch with one `UPDATE`, and finally marks the document `ready` and the job `done`. `GET /v1/jobs/:id` reports `progress` (chunks with a vector out of the total) for polling.
 
-The queue follows the brief's observer pattern: `subscribeToJobEvents(listener)` receives `started`, `progress` (after every batch) and `done` / `failed` events. Today the only listener is the log in `server.ts`; the event stream to the browser will be the second. The `queued` event with the live queue position comes with that stream.
+The queue follows the brief's observer pattern: `subscribeToEvents(listener)` receives `queued` (with the place in line), `started`, `progress` (after every batch) and `done` / `failed` events. The listeners are the log in `server.ts` and the event streams to the browsers (see [section 12](#12-live-events-layer)).
 
 Measured with the real models on the laptop (RTX 4070): 10 chunks of about 1,000 characters embed in about 200 ms once the model is loaded; loading `qwen3-embedding:0.6b` takes about 4 seconds; the very first load after Ollama starts took about 55 seconds, during which progress stays at 0.
 
@@ -484,9 +485,41 @@ Two observations from that run, not yet decisions: a Spanish question about an E
 > [!NOTE]
 > **Decision: the API loads both models when it starts.** The slow first load happens right after the laptop boots, and the API will start then too (in Docker, see Pending work). On start, `server.ts` sends Ollama a tiny embedding and an empty chat request, which loads the answer model without generating anything and with the same options as real requests, so it is not loaded twice. It takes the turn with the model like any request, before the worker resumes interrupted jobs. If Ollama is not running yet, the first request loads the models as before. Measured: with nothing loaded, the API had both models ready 8 seconds after starting. Baseline stays the default mode, as in the brief; the frontend will describe both modes (structured abstains more, baseline answers more).
 
-## 12. Local environment
+## 12. Live events layer
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#16-pending-work)).
+`GET /v1/events` keeps a connection open and pushes the user's events to the browser as Server-Sent Events, so the frontend no longer has to ask every few seconds how an upload is going, and can show a question's place in line.
+
+| Event | When | Data |
+|---|---|---|
+| `queued` | A document waits to be indexed: after the upload, and every time the line moves | `jobId`, `position` (1 = next) |
+| `started`, `progress`, `done`, `failed` | Indexing starts, after every batch of 10 chunks, when it ends or fails | `jobId`, plus `done` and `total`, `documentId` or `error` |
+| `question_queued` | The user's question waits for its turn with the model, and every time it moves up | `position` |
+| `question_started` | The question's turn came: the model is answering | (nothing) |
+
+Each message is `event: <type>` plus one line of JSON in `data:`, without the user id: a stream only carries its reader's events. A comment (`: heartbeat`) goes out every 25 seconds so proxies and the browser do not close the idle connection. The answer to a question still comes in the `POST` response; the events only tell what happens meanwhile, and since a user has one question at a time they need no id. The database stays the source of truth: on load or after reconnecting, the frontend reads `GET /v1/jobs/:id`, then listens; an event missed in between does not matter.
+
+The files: `events.service.ts` (the observer every event goes through, formerly `jobEvents.service.ts`), `eventStreams.service.ts` (opens a stream for a user, applies the limits, forwards only that user's events), `events.controller.ts` and `events.routes.ts` (mounted in the protected section), and `sse.util.ts` (the message format). The positions in the indexing line come from the `jobs` table; the positions in the model's line come from `modelTurn.service.ts`, which tells each waiting caller its place without knowing who it is, and the questions service turns that into the user's event.
+
+Measured: an open stream takes about 35 KB of memory, counting both ends of the connection, so the 30 allowed take about 1 MB.
+
+> [!NOTE]
+> **Decision: the frontend reads the stream with `fetch()`, sending the token in the header.** The browser's `EventSource` cannot send an `Authorization` header. The brief offered two ways out: read the stream with `fetch()`, which can, or trade the token for a short-lived one-use ticket to put in the URL. The first was chosen: the server authenticates the stream like any other route, and no secret travels in a URL, where proxies log it. A token in the query string was ruled out for the same reason. The frontend reads the messages itself (a small library can do it) and reconnects when the connection drops.
+
+> [!NOTE]
+> **Decision: 2 streams per user and 30 in total.** Each stream holds a connection. A user can have 2 open (for example two tabs); a third gets a 429. With 30 open in total, a new one gets a 503, the server is full, as the service skill reserves 503 for a full capacity (the plan said 429 for both). A refused client can fall back to reading `GET /v1/jobs/:id` every few seconds.
+
+> [!NOTE]
+> **Decision: a stream ends when its token expires.** A token cannot be revoked before it expires, so its expiry is the longest a stream may stay open: the server ends it then, and the frontend reconnects with a new token. To know the moment, `req.decoded` now carries `expiresAt`, and tokens without an expiry, which would never expire, are rejected. In practice streams last much less: the frontend opens one only while something is pending (a document being indexed or a question waiting) and closes it afterwards, so they last seconds, or a couple of minutes on a busy server.
+
+> [!NOTE]
+> **Decision: one channel for every live event.** Indexing and questions emit through the same observer (`events.service.ts`), and each stream subscribes to it filtering by user. The model's line reports positions through a callback (`onPosition`), so it stays a generic line that knows nothing about users or events.
+
+> [!NOTE]
+> **Decision: the events controller writes a stream.** Every other controller sends one JSON body; this one sets `text/event-stream`, writes messages over time and cleans up (heartbeat, expiry timer, subscription) when the connection closes. The limits are checked before the headers go out, so a refused stream gets the usual error body; an error after that is handled by `errorMiddleware`'s check for a response already started, added in the first review for this case.
+
+## 13. Local environment
+
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#17-pending-work)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -494,7 +527,7 @@ During development only PostgreSQL runs in Docker; the API runs on the host with
 > [!NOTE]
 > **Decision: user name `rag`.** A user name is not a secret, so a complex one adds little; access is protected by the network exposure and a long random password. The default `postgres` user is avoided because it is the first one bots try. The real hardening is two users in deployment (see below).
 
-## 13. Agreed limits
+## 14. Agreed limits
 
 The enforced values can be changed in `.env` (see `.env.example`).
 
@@ -509,6 +542,7 @@ The enforced values can be changed in `.env` (see `.env.example`).
 | Questions per user | 10 per minute, 30 per day, 1 at a time |
 | Question length | 1,000 characters |
 | Waiting for the model | 60 seconds at most, 20 questions waiting |
+| Event streams | 2 per user, 30 in total |
 | Indexing jobs per user | 1 at a time |
 | Job queue length | 20 |
 | Document lifetime | 24 hours |
@@ -517,7 +551,7 @@ The enforced values can be changed in `.env` (see `.env.example`).
 > [!NOTE]
 > **Decision: stricter limits than the brief's examples.** Registration is limited to 3 per IP per hour (shared networks such as universities still work) and documents are deleted after 24 hours instead of 7 days. Behind Cloudflare the API must read the real client IP from `CF-Connecting-IP`, trusted only for requests that come through the tunnel; otherwise every request would look like the tunnel's and share one limit.
 
-## 14. Security review
+## 15. Security review
 
 On 2026-10-17 the whole project was reviewed for bugs and vulnerabilities. Every suspicion was first probed against the real app on the test database; each confirmed problem got a test that fails on the old code and passes with the fix (checked by running the new tests with the fixes stashed).
 
@@ -541,7 +575,7 @@ Checked and already safe, now covered by tests: a `__proto__` key cannot grant a
 
 Notes that need no test now: validation `details` echo the names of unknown fields, so the frontend must show them as text, never as HTML; `/v1/health` has no rate limit (each call is one `SELECT 1` and one small Ollama request); passwords are not checked against a list of common passwords, which NIST recommends; a token keeps its role until it expires (1 hour), so demoting an admin takes effect after that; a token can outlive its account, which the documents layer answers with a 404 (see its section).
 
-## 15. Second review: security and architecture
+## 16. Second review: security and architecture
 
 On 2026-10-17, before the questions layer, the project was reviewed again: for security problems, and for places that break the layered architecture or the SOLID principles. Security suspicions were probed against the real app; the architecture was checked by reading the code and with a script that lists the imports between layers (no layer imports one it should not). As in the first review, every fix has a test that fails without it, checked by removing the fix and running the test.
 
@@ -561,7 +595,7 @@ Already fine: every query is parameterized and filtered by its owner, the domain
 | A5 | The queue decided to retry by looking at an HTTP status (503) | `ModelUnavailableError` | `jobQueue.test.ts` |
 | A7 | The list of user columns was duplicated in two services | Exported once from `users.service.ts` | existing auth tests |
 
-Deferred, and listed in [Pending work](#16-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
+Deferred, and listed in [Pending work](#17-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
 
 > [!NOTE]
 > **Decision: 3 uploads per user per day.** The quotas did not stop a loop of upload and delete, because deleting frees the slot, and every upload makes Ollama work. Accepted uploads are recorded in their own table, `upload_usage` (migration `002`), because deleting a document deletes its row. The limit counts the last 24 hours (a rolling window, like the planned question quota), the cleanup removes older rows, and only accepted uploads count, so a rejected one costs nothing. Going over answers 429, because it is a rate over time; the document and indexing quotas stay 409 and are checked first. The review proposed 10 per hour with the in-memory rate limiter; a count in the database, with the same value as the document limit, was chosen instead: it survives restarts and `GET /v1/users/me` can show it (`usage.uploadsToday`). Configurable with `MAX_UPLOADS_PER_DAY`.
@@ -579,7 +613,7 @@ Deferred, and listed in [Pending work](#16-pending-work): S5, `/v1/health` has n
 > **Decision: body parsers per route, JSON only.** There is no global body parser. Each route that takes a body adds `express.json()` itself: the auth routes after the per-address limits and before the per-email limit, which reads the email; uploads with their 2 MB limit, after authentication. `app.ts` no longer knows any route path, an address over its limit gets its 429 without its body being read, and the form parser is gone because the API only accepts JSON.
 
 > [!NOTE]
-> **Decision: the queue split in three.** `jobEvents.service.ts` is the observer; `indexing.service.ts` runs one job (embed the chunks, mark the document ready or failed, or put the job back in the queue); `jobQueue.service.ts` claims the jobs and runs them one at a time, polls, starts, stops and recovers at startup. The coming event stream only needs the events, and will depend on that file alone.
+> **Decision: the queue split in three.** `jobEvents.service.ts` (now `events.service.ts`) is the observer; `indexing.service.ts` runs one job (embed the chunks, mark the document ready or failed, or put the job back in the queue); `jobQueue.service.ts` claims the jobs and runs them one at a time, polls, starts, stops and recovers at startup. The coming event stream only needs the events, and will depend on that file alone.
 
 > [!NOTE]
 > **Decision: `requireUserId(req)` instead of `req.decoded!`.** Controllers get the logged-in user's id through a helper that throws a 401 `AppError` when there is none. A router mounted by mistake outside the protected section then answers 401 instead of crashing into a 500.
@@ -587,9 +621,10 @@ Deferred, and listed in [Pending work](#16-pending-work): S5, `/v1/health` has n
 > [!NOTE]
 > **Decision: `ModelUnavailableError` for "try again later".** Ollama being unreachable is thrown as `ModelUnavailableError`, a subclass of `AppError` with status 503, and the queue puts a job back only for that type. Before, it did so for any `AppError` with status 503, which tied the background work to an HTTP code: a future 503 thrown for another reason would have been retried forever. HTTP clients still get the same 503.
 
-## 16. Pending work
+## 17. Pending work
 
-- **Next layer:** the event stream (`GET /v1/events`): job events for the user's own jobs, and `queued` events with the live position of indexing jobs and of questions waiting for the model.
+- **Next step:** deployment and the frontend (step 5 of the brief, below).
+- **Frontend and the event stream:** read it with `fetch()` and the token in the header; open it only while a document is being indexed or a question is waiting, and close it afterwards; reconnect when it drops, after reading `GET /v1/jobs/:id`; ignore a `queued` event that arrives after `started` for the same job (two messages sent at almost the same moment can arrive in that order); with a quick Cloudflare tunnel, which does not support SSE, read `GET /v1/jobs/:id` every 2 or 3 seconds instead.
 - **Models unloaded after 5 idle minutes:** Ollama's default. Reloading both takes about 8 seconds (3 for the embedding model, 5 for the answer model), so the first question after a pause waits that long. A longer `keep_alive` would avoid it, at the cost of keeping 4.6 GB of video memory while the laptop is used for other things; left as it is.
 - **Frontend: the two answer modes:** a short description next to the mode selector: structured abstains more often and invents less (18/20 correct abstentions in RAG1's evaluation), baseline answers more questions (60/80 against 54/80).
 - **Questions in another language (idea):** a Spanish question about an English document finds no chunk above 0.30. The frontend could warn about it, or the brief's idea of answering in the document's language could be explored.

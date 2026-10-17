@@ -6,10 +6,15 @@ interface TurnOptions {
     maxWaitMs?: number;
     // leave the line when the caller no longer needs the turn (the browser disconnected)
     signal?: AbortSignal;
+    // told the caller's place in line (1 = next) when it joins and every time it moves up
+    onPosition?: (position: number) => void;
 }
 
 interface Waiter {
     start: () => void;
+    onPosition?: (position: number) => void;
+    // the place it was last told, 0 before joining
+    position: number;
 }
 
 const BUSY_MESSAGE = "The server is busy, please try again in a few minutes";
@@ -20,12 +25,23 @@ const BUSY_MESSAGE = "The server is busy, please try again in a few minutes";
 let busy = false;
 const line: Waiter[] = [];
 
+// Tells every waiter whose place changed its new position.
+const announcePositions = (): void => {
+    line.forEach((waiter, index) => {
+        if (waiter.position !== index + 1) {
+            waiter.position = index + 1;
+            waiter.onPosition?.(waiter.position);
+        }
+    });
+};
+
 // Hands the turn straight to the next caller in line, or frees it.
 const releaseTurn = (): void => {
     const next = line.shift();
 
     if (next) {
         next.start();
+        announcePositions();
     } else {
         busy = false;
     }
@@ -54,6 +70,7 @@ const waitForTurn = (options: TurnOptions): Promise<void> => {
 
             if (position !== -1) {
                 line.splice(position, 1);
+                announcePositions();
             }
 
             stopWaiting();
@@ -66,7 +83,9 @@ const waitForTurn = (options: TurnOptions): Promise<void> => {
             start: () => {
                 stopWaiting();
                 resolve();
-            }
+            },
+            onPosition: options.onPosition,
+            position: 0
         };
 
         if (options.maxWaitMs !== undefined) {
@@ -75,6 +94,7 @@ const waitForTurn = (options: TurnOptions): Promise<void> => {
 
         options.signal?.addEventListener("abort", onAbort, { once: true });
         line.push(waiter);
+        announcePositions();
     });
 };
 

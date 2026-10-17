@@ -97,12 +97,18 @@ describe("authenticateMiddleware", () => {
 
         // a payload that is a plain string instead of an object
         assert.equal((await getWithToken("/me", jwt.sign("user", SECRET))).status, 401, "string payload");
+
+        // a token signed without an expiry would never expire
+        assert.equal((await getWithToken("/me", jwt.sign(payload, SECRET))).status, 401, "no expiry");
     });
 
-    it("passes on only the id and the role, not the other claims of the token", async () => {
-        const response = await getWithToken("/me", jwt.sign({ ...payload, extra: "claim" }, SECRET, { expiresIn: "1h" }));
+    it("passes on only the id, the role and the expiry, not the other claims of the token", async () => {
+        const token = jwt.sign({ ...payload, extra: "claim" }, SECRET, { expiresIn: "1h" });
+        const { exp } = jwt.decode(token) as jwt.JwtPayload;
 
-        assert.deepEqual(response.body.decoded, payload);
+        const response = await getWithToken("/me", token);
+
+        assert.deepEqual(response.body.decoded, { ...payload, expiresAt: (exp ?? 0) * 1000 });
     });
 
     it("answers 500 when SECRET_KEY is not configured", async (t) => {
