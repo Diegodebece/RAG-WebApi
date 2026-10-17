@@ -2,7 +2,7 @@
     "hooks": {
         "PreToolUse": [
             {
-                "matcher": "Bash|PowerShell|WebFetch|mcp__.*",
+                "matcher": "Bash|PowerShell|WebFetch|EnterWorktree|mcp__.*",
                 "hooks": [
                     {
                         "type": "command",

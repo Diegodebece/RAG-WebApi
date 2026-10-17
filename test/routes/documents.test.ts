@@ -4,6 +4,7 @@ import request from "supertest";
 
 process.env.SECRET_KEY = "test-secret-only-for-these-tests-0123456789";
 process.env.MAX_DOCUMENTS_PER_USER = "3";
+process.env.MAX_UPLOADS_PER_DAY = "3";
 process.env.MAX_DOCUMENT_CHARS = "200000";
 process.env.MAX_QUEUED_JOBS = "3";
 
@@ -24,6 +25,22 @@ const upload = (auth: Auth, body: object = { filename: "notes.txt", text: sample
 const finishJobs = () => pool.query("UPDATE jobs SET status = 'done', finished_at = now()");
 
 const HOUR_MS = 60 * 60 * 1000;
+
+const countUploads = async (): Promise<number> =>
+    (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM upload_usage")).rows[0].count;
+
+// upload, let the indexing finish and delete the document, so neither the document limit nor the
+// "one indexing job at a time" rule stops the next upload
+const uploadAndDelete = async (auth: Auth) => {
+    const response = await upload(auth);
+    await finishJobs();
+
+    if (response.status === 202) {
+        await request(app).delete(`/v1/documents/${response.body.data.document.id}`).set(...auth);
+    }
+
+    return response;
+};
 
 before(resetTestDatabase);
 
@@ -91,6 +108,25 @@ describe("POST /v1/documents", () => {
         }
     });
 
+    it("rejects filenames with control or text-direction characters", async () => {
+        const ana = await createTestUser("ana@example.com");
+        const names = {
+            "null byte": `notes${String.fromCodePoint(0)}.txt`,
+            "new line": `notes${String.fromCodePoint(0x0a)}.txt`,
+            "right-to-left override": `invoice${String.fromCodePoint(0x202e)}txt.exe`,
+            "right-to-left isolate": `invoice${String.fromCodePoint(0x2067)}txt.exe`
+        };
+
+        for (const [label, filename] of Object.entries(names)) {
+            const response = await upload(ana.auth, { filename, text: sampleText });
+            assert.equal(response.status, 400, label);
+            assert.deepEqual(response.body, { message: "Validation error", details: ["Filename contains control or text-direction characters"] }, label);
+        }
+
+        const accepted = await upload(ana.auth, { filename: `Informe a${String.fromCodePoint(0xf1)}o ${String.fromCodePoint(0x05e9, 0x05dc, 0x05d5, 0x05dd)}.txt`, text: sampleText });
+        assert.equal(accepted.status, 202);
+    });
+
     it("accepts a document larger than the 100 KB default body limit, up to 2 MB", async () => {
         const ana = await createTestUser("ana@example.com");
 
@@ -126,6 +162,38 @@ describe("POST /v1/documents", () => {
         const fourth = await upload(ana.auth);
         assert.equal(fourth.status, 409);
         assert.match(fourth.body.message, /Document limit reached/);
+    });
+
+    it("allows 3 uploads per user per day, even when the documents are deleted", async () => {
+        const ana = await createTestUser("ana@example.com");
+
+        for (let index = 0; index < 3; index++) {
+            assert.equal((await uploadAndDelete(ana.auth)).status, 202);
+        }
+
+        const fourth = await upload(ana.auth);
+        assert.equal(fourth.status, 429);
+        assert.deepEqual(fourth.body, { message: "Daily upload limit reached (3): try again tomorrow" });
+
+        const bob = await createTestUser("bob@example.com");
+        assert.equal((await upload(bob.auth)).status, 202, "the limit is per user");
+    });
+
+    it("counts only accepted uploads toward the daily limit", async () => {
+        const ana = await createTestUser("ana@example.com");
+        await upload(ana.auth);
+
+        assert.equal((await upload(ana.auth)).status, 409);
+        assert.equal((await upload(ana.auth, { filename: "a.txt" })).status, 400);
+
+        assert.equal(await countUploads(), 1);
+    });
+
+    it("does not count uploads older than 24 hours toward the daily limit", async () => {
+        const ana = await createTestUser("ana@example.com");
+        await pool.query("INSERT INTO upload_usage (user_id, uploaded_at) SELECT $1, now() - interval '25 hours' FROM generate_series(1, 3)", [ana.id]);
+
+        assert.equal((await upload(ana.auth)).status, 202);
     });
 
     it("allows one document being indexed at a time per user", async () => {
@@ -284,12 +352,13 @@ describe("reading and deleting documents", () => {
         }
     });
 
-    it("reports document usage in GET /v1/users/me", async () => {
+    it("reports document and upload usage in GET /v1/users/me", async () => {
         const ana = await createTestUser("ana@example.com");
+        await uploadAndDelete(ana.auth);
         await upload(ana.auth);
 
         const response = await request(app).get("/v1/users/me").set(...ana.auth);
 
-        assert.deepEqual(response.body.data.usage, { documents: { used: 1, limit: 3 } });
+        assert.deepEqual(response.body.data.usage, { documents: { used: 1, limit: 3 }, uploadsToday: { used: 2, limit: 3 } });
     });
 });

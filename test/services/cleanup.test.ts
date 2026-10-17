@@ -43,7 +43,17 @@ describe("deleteExpiredDataService", () => {
         assert.equal(await count("question_usage"), 1);
     });
 
+    it("deletes upload records older than the daily limit window", async () => {
+        const { rows: [user] } = await pool.query<{ id: string }>("INSERT INTO users (email, password_hash) VALUES ('ana@example.com', 'x') RETURNING id");
+        await pool.query("INSERT INTO upload_usage (user_id, uploaded_at) VALUES ($1, now() - interval '25 hours'), ($1, now() - interval '1 hour')", [user.id]);
+
+        const removed = await deleteExpiredDataService();
+
+        assert.equal(removed.uploadUsage, 1);
+        assert.equal(await count("upload_usage"), 1);
+    });
+
     it("does nothing when nothing has expired", async () => {
-        assert.deepEqual(await deleteExpiredDataService(), { documents: 0, questionUsage: 0 });
+        assert.deepEqual(await deleteExpiredDataService(), { documents: 0, uploadUsage: 0, questionUsage: 0 });
     });
 });

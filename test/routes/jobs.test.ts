@@ -39,6 +39,7 @@ describe("GET /v1/jobs/:id", () => {
         assert.equal(response.body.data.status, "queued");
         assert.equal(response.body.data.queuePosition, 1);
         assert.equal(response.body.data.error, null);
+        assert.deepEqual(response.body.data.progress, { done: 0, total: 1 });
     });
 
     it("counts the queued jobs of other users ahead in the position", async () => {

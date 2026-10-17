@@ -133,26 +133,29 @@ describe("database schema", () => {
         await pool.query("INSERT INTO chunks (document_id, chunk_index, text) VALUES ($1, 0, 'a')", [documentId]);
         await pool.query("INSERT INTO jobs (user_id, document_id, type) VALUES ($1, $2, 'index_document')", [userId, documentId]);
         await pool.query("INSERT INTO question_usage (user_id) VALUES ($1)", [userId]);
+        await pool.query("INSERT INTO upload_usage (user_id) VALUES ($1)", [userId]);
 
         await pool.query("DELETE FROM users WHERE id = $1", [userId]);
 
-        for (const table of ["documents", "chunks", "jobs", "question_usage"]) {
+        for (const table of ["documents", "chunks", "jobs", "question_usage", "upload_usage"]) {
             assert.equal(await countRows(table), 0, table);
         }
     });
 
-    it("deleting a document deletes its chunks and jobs but keeps the question count", async () => {
+    it("deleting a document deletes its chunks and jobs but keeps the question and upload counts", async () => {
         const userId = await createUser();
         const documentId = await createDocument(userId);
         await pool.query("INSERT INTO chunks (document_id, chunk_index, text) VALUES ($1, 0, 'a')", [documentId]);
         await pool.query("INSERT INTO jobs (user_id, document_id, type) VALUES ($1, $2, 'answer_question')", [userId, documentId]);
         await pool.query("INSERT INTO question_usage (user_id) VALUES ($1), ($1)", [userId]);
+        await pool.query("INSERT INTO upload_usage (user_id) VALUES ($1)", [userId]);
 
         await pool.query("DELETE FROM documents WHERE id = $1", [documentId]);
 
         assert.equal(await countRows("chunks"), 0);
         assert.equal(await countRows("jobs"), 0);
         assert.equal(await countRows("question_usage"), 2);
+        assert.equal(await countRows("upload_usage"), 1);
     });
 });
 

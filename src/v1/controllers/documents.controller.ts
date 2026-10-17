@@ -5,11 +5,12 @@ import {
     getDocumentByIdService,
     getDocumentsService
 } from "../services/documents.service.js";
+import { requireUserId } from "../utils/requireUserId.util.js";
 import type { CreateDocumentInput } from "../validators/documents.validator.js";
 
 export const getDocuments = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const documents = await getDocumentsService(req.decoded!.id);
+        const documents = await getDocumentsService(requireUserId(req));
         return res.status(200).json({ success: true, message: "Documents retrieved successfully", data: documents });
     } catch (error) {
         next(error);
@@ -19,7 +20,7 @@ export const getDocuments = async (req: Request, res: Response, next: NextFuncti
 export const getDocumentById = async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
     try {
         const { id } = req.params;
-        const document = await getDocumentByIdService(req.decoded!.id, id);
+        const document = await getDocumentByIdService(requireUserId(req), id);
         return res.status(200).json({ success: true, message: "Document retrieved successfully", data: document });
     } catch (error) {
         next(error);
@@ -29,7 +30,7 @@ export const getDocumentById = async (req: Request<{ id: string }>, res: Respons
 // 202 Accepted instead of 201: the document exists, but it can be used only after the indexing job finishes.
 export const createDocument = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const created = await createDocumentService(req.decoded!.id, req.validatedBody as CreateDocumentInput);
+        const created = await createDocumentService(requireUserId(req), req.validatedBody as CreateDocumentInput);
         return res.status(202).json({ success: true, message: "Document accepted for indexing", data: created });
     } catch (error) {
         next(error);
@@ -39,7 +40,7 @@ export const createDocument = async (req: Request, res: Response, next: NextFunc
 export const deleteDocument = async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
     try {
         const { id } = req.params;
-        await deleteDocumentService(req.decoded!.id, id);
+        await deleteDocumentService(requireUserId(req), id);
         return res.status(200).json({ success: true, message: "Document deleted successfully" });
     } catch (error) {
         next(error);

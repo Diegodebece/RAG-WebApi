@@ -59,13 +59,70 @@ describe("deny-github hook", () => {
         assert.equal(shell("git config --global alias.up \"!git push\""), "deny");
     });
 
+    it("blocks every way of creating a branch or a worktree", () => {
+        for (const command of [
+            "git switch -c feature/documents",
+            "git switch --create feature/documents",
+            "git switch -C feature/documents",
+            "git checkout -b feature/documents",
+            "git checkout -B feature/documents",
+            "git checkout --orphan gh-pages",
+            "git branch feature/documents",
+            "git branch -m better-name",
+            "git branch -c copy-of-main",
+            "git stash branch feature/stash",
+            "git worktree add ../rag-web-review",
+            "git status && git switch -c sneaky"
+        ]) {
+            assert.equal(shell(command), "deny", command);
+        }
+        assert.equal(decide("EnterWorktree", {}), "deny");
+    });
+
+    it("blocks switching, moving and deleting branches", () => {
+        for (const command of [
+            "git switch main",
+            "git switch -",
+            "git checkout main",
+            "git checkout feature/documents",
+            "git checkout .",
+            "git branch -d feature/old",
+            "git branch -D feature/old",
+            "git branch --delete feature/old",
+            "git branch -f main HEAD~1",
+            "cd app && git switch main"
+        ]) {
+            assert.equal(shell(command), "deny", command);
+        }
+    });
+
+    it("allows listing branches and restoring files", () => {
+        for (const command of [
+            "git branch",
+            "git branch -a",
+            "git branch -vv",
+            "git branch --show-current",
+            "git branch --list \"feature/*\"",
+            "git branch --merged",
+            "git branch -u origin/main",
+            "git checkout -- src/app.ts",
+            "git checkout HEAD -- src/app.ts",
+            "git restore src/app.ts",
+            "git restore --staged src/app.ts",
+            "git stash",
+            "git stash pop",
+            "git worktree list"
+        ]) {
+            assert.equal(shell(command), "allow", command);
+        }
+    });
+
     it("allows local git and unrelated commands", () => {
         for (const command of [
             "git status --short",
             "git add .",
             "git commit -m \"push the fix, then pull\"",
             "git log --oneline -5",
-            "git switch -c feature/auth",
             "git remote -v",
             "git config --get user.name",
             "git -C \"RAG project\" status",

@@ -1,15 +1,14 @@
 import { randomBytes } from "node:crypto";
-import jwt from "jsonwebtoken";
 import { pool } from "../config/db.config.js";
-import { TOKEN_LIFETIME_SECONDS } from "../config/limits.config.js";
+import { getSecretKey } from "../config/auth.config.js";
 import { AppError } from "../utils/appError.util.js";
 import { isUniqueViolation } from "../utils/dbErrors.util.js";
 import { hashPassword, verifyPassword } from "../utils/password.util.js";
-import type { AuthResult, TokenPayload } from "../types/auth.type.js";
+import { signToken } from "../utils/token.util.js";
+import { USER_COLUMNS } from "./users.service.js";
+import type { AuthResult } from "../types/auth.type.js";
 import type { User, UserRecord } from "../types/users.type.js";
 import type { LoginUserInput, RegisterUserInput } from "../validators/auth.validator.js";
-
-const USER_COLUMNS = `id, email, role, created_at AS "createdAt"`;
 
 const EMAIL_TAKEN_MESSAGE = "Email is already registered";
 
@@ -20,8 +19,8 @@ const INVALID_CREDENTIALS_MESSAGE = "Invalid email or password";
 const DUMMY_PASSWORD_HASH = hashPassword(randomBytes(16).toString("hex"));
 
 // server.ts refuses to start without a proper SECRET_KEY; this guards code paths that run without server.ts.
-const getSecretKey = (): string => {
-    const secretKey = process.env.SECRET_KEY;
+const requireSecretKey = (): string => {
+    const secretKey = getSecretKey();
 
     if (!secretKey) {
         throw new Error("SECRET_KEY is not set");
@@ -30,14 +29,9 @@ const getSecretKey = (): string => {
     return secretKey;
 };
 
-const createToken = (user: User, secretKey: string): string => {
-    const payload: TokenPayload = { id: user.id, role: user.role };
-    return jwt.sign(payload, secretKey, { algorithm: "HS256", expiresIn: TOKEN_LIFETIME_SECONDS });
-};
-
 export const registerUserService = async (userData: RegisterUserInput): Promise<AuthResult> => {
     // read first, so a missing secret fails before the account is created, not after
-    const secretKey = getSecretKey();
+    const secretKey = requireSecretKey();
     const { rows: existing } = await pool.query("SELECT 1 FROM users WHERE lower(email) = lower($1)", [userData.email]);
 
     if (existing.length > 0) {
@@ -61,7 +55,7 @@ export const registerUserService = async (userData: RegisterUserInput): Promise<
         throw error;
     }
 
-    return { user, token: createToken(user, secretKey) };
+    return { user, token: signToken(user, secretKey) };
 };
 
 export const loginUserService = async (loginData: LoginUserInput): Promise<AuthResult> => {
@@ -81,5 +75,5 @@ export const loginUserService = async (loginData: LoginUserInput): Promise<AuthR
     }
 
     const user: User = { id: record.id, email: record.email, role: record.role, createdAt: record.createdAt };
-    return { user, token: createToken(user, getSecretKey()) };
+    return { user, token: signToken(user, requireSecretKey()) };
 };

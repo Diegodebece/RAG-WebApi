@@ -79,6 +79,32 @@ describe("authenticateMiddleware", () => {
         }
     });
 
+    it("rejects a correctly signed token whose payload does not have the expected shape", async () => {
+        const payloads = {
+            "no id": { role: "user" },
+            "id that is not a UUID": { id: "' OR 1=1 --", role: "user" },
+            "numeric id": { id: 42, role: "user" },
+            "no role": { id: payload.id },
+            "unknown role": { id: payload.id, role: "superadmin" }
+        };
+
+        for (const [label, body] of Object.entries(payloads)) {
+            const response = await getWithToken("/me", jwt.sign(body, SECRET, { expiresIn: "1h" }));
+
+            assert.equal(response.status, 401, label);
+            assert.deepEqual(response.body, { message: "Invalid or expired authentication token" }, label);
+        }
+
+        // a payload that is a plain string instead of an object
+        assert.equal((await getWithToken("/me", jwt.sign("user", SECRET))).status, 401, "string payload");
+    });
+
+    it("passes on only the id and the role, not the other claims of the token", async () => {
+        const response = await getWithToken("/me", jwt.sign({ ...payload, extra: "claim" }, SECRET, { expiresIn: "1h" }));
+
+        assert.deepEqual(response.body.decoded, payload);
+    });
+
     it("answers 500 when SECRET_KEY is not configured", async (t) => {
         t.mock.method(console, "error", () => {});
         delete process.env.SECRET_KEY;

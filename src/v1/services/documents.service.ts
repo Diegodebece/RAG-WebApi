@@ -1,9 +1,16 @@
 import { pool, withTransaction } from "../config/db.config.js";
-import { DOCUMENT_LIFETIME_HOURS, MAX_DOCUMENTS_PER_USER, MAX_QUEUED_JOBS } from "../config/limits.config.js";
+import {
+    DAILY_LIMIT_WINDOW_HOURS,
+    DOCUMENT_LIFETIME_HOURS,
+    MAX_DOCUMENTS_PER_USER,
+    MAX_QUEUED_JOBS,
+    MAX_UPLOADS_PER_DAY
+} from "../config/limits.config.js";
 import { AppError } from "../utils/appError.util.js";
 import { chunkText } from "../utils/chunkText.util.js";
 import { sanitizeText } from "../utils/sanitizeText.util.js";
 import { isUuid } from "../utils/uuid.util.js";
+import { notifyJobQueuedService } from "./jobQueue.service.js";
 import type { CreatedDocument, Document } from "../types/documents.type.js";
 import type { CreateDocumentInput } from "../validators/documents.validator.js";
 
@@ -31,7 +38,7 @@ export const createDocumentService = async (userId: string, documentData: Create
 
     const chunks = chunkText(text);
 
-    return withTransaction(async (client) => {
+    const created = await withTransaction(async (client) => {
         // Locks the user's row until the transaction ends, so two uploads from one user run one after the
         // other and cannot both pass the checks below. No row means the token outlived its account.
         const { rows: users } = await client.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [userId]);
@@ -40,13 +47,15 @@ export const createDocumentService = async (userId: string, documentData: Create
             throw new AppError(404, "User not found");
         }
 
-        const { rows: [usage] } = await client.query<{ documents: number; activeJobs: number; queuedJobs: number }>(
+        const { rows: [usage] } = await client.query<{ documents: number; uploadsToday: number; activeJobs: number; queuedJobs: number }>(
             `SELECT
                  (SELECT count(*)::int FROM documents WHERE user_id = $1) AS documents,
+                 (SELECT count(*)::int FROM upload_usage
+                  WHERE user_id = $1 AND uploaded_at > now() - make_interval(hours => $2)) AS "uploadsToday",
                  (SELECT count(*)::int FROM jobs
                   WHERE user_id = $1 AND type = 'index_document' AND status IN ('queued', 'processing')) AS "activeJobs",
                  (SELECT count(*)::int FROM jobs WHERE status IN ('queued', 'processing')) AS "queuedJobs"`,
-            [userId]
+            [userId, DAILY_LIMIT_WINDOW_HOURS]
         );
 
         if (usage.documents >= MAX_DOCUMENTS_PER_USER) {
@@ -55,6 +64,12 @@ export const createDocumentService = async (userId: string, documentData: Create
 
         if (usage.activeJobs > 0) {
             throw new AppError(409, "Another of your documents is still being indexed; try again when it finishes");
+        }
+
+        // a rolling 24-hour window: deleting a document does not give an upload back, so uploading and
+        // deleting in a loop cannot keep Ollama busy
+        if (usage.uploadsToday >= MAX_UPLOADS_PER_DAY) {
+            throw new AppError(429, `Daily upload limit reached (${MAX_UPLOADS_PER_DAY}): try again tomorrow`);
         }
 
         if (usage.queuedJobs >= MAX_QUEUED_JOBS) {
@@ -78,8 +93,15 @@ export const createDocumentService = async (userId: string, documentData: Create
             [userId, row.id]
         );
 
+        // counted only here, when the upload is accepted: rejected requests do not use up the daily limit
+        await client.query("INSERT INTO upload_usage (user_id) VALUES ($1)", [userId]);
+
         return { document: withExpiry(row), jobId: job.id };
     });
+
+    // after the commit, so the worker can see the new job
+    notifyJobQueuedService();
+    return created;
 };
 
 export const getDocumentsService = async (userId: string): Promise<Document[]> => {

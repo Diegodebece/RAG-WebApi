@@ -12,6 +12,7 @@ export interface User {
 export interface CurrentUser extends User {
     usage: {
         documents: { used: number; limit: number };
+        uploadsToday: { used: number; limit: number };
     };
 }
 

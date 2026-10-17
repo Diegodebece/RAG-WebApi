@@ -40,16 +40,22 @@ export const TOKEN_LIFETIME_SECONDS = readPositiveInteger("TOKEN_LIFETIME_SECOND
 
 export const MAX_DOCUMENTS_PER_USER = readPositiveInteger("MAX_DOCUMENTS_PER_USER", 3);
 
+// accepted uploads per user in the last 24 hours; deleting a document does not give an upload back
+export const MAX_UPLOADS_PER_DAY = readPositiveInteger("MAX_UPLOADS_PER_DAY", 3);
+
+// the rolling window of the daily limits (uploads now, questions later)
+export const DAILY_LIMIT_WINDOW_HOURS = 24;
+
 // about 60 Word pages; checked on the text the browser sends, before it is cleaned
 export const MAX_DOCUMENT_CHARS = readPositiveInteger("MAX_DOCUMENT_CHARS", 200000);
 
 // queued and running jobs of all users together; one Ollama job runs at a time
 export const MAX_QUEUED_JOBS = readPositiveInteger("MAX_QUEUED_JOBS", 20);
 
-// documents, and the question records counted for the daily quota, are deleted after this many hours
+// documents (with their chunks and jobs) are deleted after this many hours
 export const DOCUMENT_LIFETIME_HOURS = readPositiveInteger("DOCUMENT_LIFETIME_HOURS", 24);
 
-// question records only matter for the daily quota, so they are kept for one day
-export const QUESTION_USAGE_RETENTION_HOURS = 24;
+// upload and question records only matter for the daily limits, so they are kept for one window
+export const USAGE_RETENTION_HOURS = DAILY_LIMIT_WINDOW_HOURS;
 
 export const CLEANUP_INTERVAL_MS = 10 * MINUTE_MS;

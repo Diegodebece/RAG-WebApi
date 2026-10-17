@@ -7,6 +7,6 @@ export const documentsRouter = express.Router({ mergeParams: true });
 
 documentsRouter.get("/", getDocuments);
 documentsRouter.get("/:id", getDocumentById);
-// uploads parse their own body (up to 2 MB); app.ts skips the default 100 KB parser for this router
+// extracted text can take more than 1 MB as JSON, so uploads raise the default 100 KB body limit to 2 MB
 documentsRouter.post("/", express.json({ limit: "2mb" }), validateBodyMiddleware(createDocumentSchema), createDocument);
 documentsRouter.delete("/:id", deleteDocument);

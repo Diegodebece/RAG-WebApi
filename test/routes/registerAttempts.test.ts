@@ -36,4 +36,11 @@ describe("registration attempts per address", () => {
 
         assert.equal(response.status, 429);
     });
+
+    it("answers an address over the limit before reading the request body", async () => {
+        // a malformed body would be a 400 if it were parsed first
+        const response = await request(app).post("/v1/auth/register").set("Content-Type", "application/json").send("{");
+
+        assert.equal(response.status, 429);
+    });
 });

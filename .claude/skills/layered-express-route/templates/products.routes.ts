@@ -8,6 +8,6 @@ export const productsRouter = express.Router({ mergeParams: true });
 
 productsRouter.get("/", getProducts);
 productsRouter.get("/:id", getProductById);
-productsRouter.post("/", authorizeMiddleware(["admin"]), validateBodyMiddleware(createProductSchema), createProduct);
-productsRouter.patch("/:id", authorizeMiddleware(["admin"]), validateBodyMiddleware(updateProductSchema), updateProduct);
+productsRouter.post("/", authorizeMiddleware(["admin"]), express.json(), validateBodyMiddleware(createProductSchema), createProduct);
+productsRouter.patch("/:id", authorizeMiddleware(["admin"]), express.json(), validateBodyMiddleware(updateProductSchema), updateProduct);
 productsRouter.delete("/:id", authorizeMiddleware(["admin"]), deleteProduct);
