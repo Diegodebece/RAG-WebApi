@@ -25,7 +25,7 @@ authRouter.post(
 authRouter.post(
     "/login",
     rateLimitMiddleware({ limit: LOGINS_PER_15_MINUTES, windowMs: LOGIN_WINDOW_MS, keyBy: "ip" }),
-    rateLimitMiddleware({ limit: FAILED_LOGINS_PER_EMAIL_PER_15_MINUTES, windowMs: LOGIN_WINDOW_MS, keyBy: "email", onlyFailures: true }),
+    rateLimitMiddleware({ limit: FAILED_LOGINS_PER_EMAIL_PER_15_MINUTES, windowMs: LOGIN_WINDOW_MS, keyBy: "emailAndIp", onlyFailures: true }),
     validateBodyMiddleware(loginUserSchema),
     loginUser
 );

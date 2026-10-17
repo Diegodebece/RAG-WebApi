@@ -11,7 +11,10 @@ export const app = express();
 app.disable("x-powered-by");
 
 app.use(cors());
-app.use(express.json());
+// Bodies up to 100 KB everywhere, except document uploads: they can take more than 1 MB as JSON and are
+// parsed by their own route, after authentication, so anonymous requests never get a large body read.
+const defaultJsonParser = express.json();
+app.use((req, res, next) => (req.path.toLowerCase().startsWith("/v1/documents") ? next() : defaultJsonParser(req, res, next)));
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/v1", v1Router);

@@ -20,6 +20,7 @@ description: How to write the service (business logic) layer of an Express API. 
 
 - [templates/products.service.ts](templates/products.service.ts) — CRUD with PostgreSQL through `pg`
 - [templates/dbErrors.util.ts](templates/dbErrors.util.ts) — `isUniqueViolation`, goes in `utils/`
+- [templates/uuid.util.ts](templates/uuid.util.ts) — `isUuid`, goes in `utils/`
 
 The template assumes PostgreSQL with `pg` and the `pool` / `withTransaction` from `config/db.config.ts` (see `layered-express-structure`). A project with another data layer keeps the same rules and swaps the queries.
 
@@ -36,12 +37,15 @@ The template assumes PostgreSQL with `pg` and the `pool` / `withTransaction` fro
   | invalid input that passed Joi (business rule broken) | 400 |
   | role not allowed for this action | 403 |
   | resource not found, or it belongs to another user | 404 |
-  | duplicate / state conflict | 409 |
+  | duplicate / state conflict (including a quota already used up) | 409 |
+  | temporarily unavailable: a queue is full or a dependency is down | 503 |
+  | a dependency did not answer in time | 504 |
 
   Messages are short English sentences: "Product not found".
-- Never throw `Error` with a `.status`, never use status `200` or `5xx` in an `AppError`. Do not catch errors just to rethrow them; let unexpected errors bubble up.
+- Never throw `Error` with a `.status`, never use status `200` in an `AppError`, and use `5xx` only for the 503/504 cases above: any other 5xx is an unexpected error that must bubble up to `errorMiddleware`'s generic 500. Do not catch errors just to rethrow them; let unexpected errors bubble up.
 - `getById`, `update` and `delete` always 404 when the resource does not exist.
 - `update` re-checks uniqueness only for the fields being changed, excluding the current record.
+- Ids from the URL are checked with `isUuid(id)` (`utils/uuid.util.ts`) before querying; a malformed id gets the same 404 as an unknown one, instead of PostgreSQL's `22P02` error becoming a 500.
 - Ownership: when a resource belongs to a user, receive `userId` and filter by it in the query itself (`WHERE id = $1 AND user_id = $2`). A resource of another user gets the same 404 as a missing one, so its existence is not revealed.
 - Lists return an empty array when nothing is found, never an error.
 - Pagination (inline for now): `page` and `limit` arrive as `unknown` straight from `req.query`; `const pageNumber = Number(page) || 1; const limitNumber = Number(limit) || 5; const offset = (pageNumber - 1) * limitNumber;`

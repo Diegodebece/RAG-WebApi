@@ -21,7 +21,7 @@ const buildIpLimitedApp = (limit: number) => {
 const buildFailedLoginApp = (limit: number) => {
     const app = express();
     app.use(express.json());
-    app.post("/login", rateLimitMiddleware({ limit, windowMs: MINUTE, keyBy: "email", onlyFailures: true }), (req, res) => {
+    app.post("/login", rateLimitMiddleware({ limit, windowMs: MINUTE, keyBy: "emailAndIp", onlyFailures: true }), (req, res) => {
         res.status(req.body.password === "right" ? 200 : 401).json({});
     });
     app.use(errorMiddleware);
@@ -34,27 +34,32 @@ describe("failed-login limit and account lockout", () => {
         const app = express();
         app.set("trust proxy", true);
         app.use(express.json());
-        app.post("/login", rateLimitMiddleware({ limit: 2, windowMs: MINUTE, keyBy: "email", onlyFailures: true }), (req, res) => {
+        app.post("/login", rateLimitMiddleware({ limit: 2, windowMs: MINUTE, keyBy: "emailAndIp", onlyFailures: true }), (req, res) => {
             res.status(req.body.password === "right" ? 200 : 401).json({});
         });
         app.use(errorMiddleware);
         return app;
     };
 
-    it(
-        "does not let an attacker lock the owner out of their account",
-        { todo: "decision pending: failed logins are counted per email, so anyone can block an account for 15 minutes" },
-        async () => {
-            const app = request(buildTwoClientApp());
+    it("does not let an attacker lock the owner out of their account", async () => {
+        const app = request(buildTwoClientApp());
 
-            for (let attempt = 0; attempt < 3; attempt++) {
-                await app.post("/login").set("X-Forwarded-For", "203.0.113.66").send({ email: "victim@example.com", password: "guess" });
-            }
-
-            const owner = await app.post("/login").set("X-Forwarded-For", "198.51.100.7").send({ email: "victim@example.com", password: "right" });
-            assert.equal(owner.status, 200);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            await app.post("/login").set("X-Forwarded-For", "203.0.113.66").send({ email: "victim@example.com", password: "guess" });
         }
-    );
+
+        const owner = await app.post("/login").set("X-Forwarded-For", "198.51.100.7").send({ email: "victim@example.com", password: "right" });
+        assert.equal(owner.status, 200);
+    });
+
+    it("still stops the attacker from guessing that account from their own address", async () => {
+        const app = request(buildTwoClientApp());
+        const guess = () => app.post("/login").set("X-Forwarded-For", "203.0.113.66").send({ email: "victim@example.com", password: "guess" });
+
+        assert.equal((await guess()).status, 401);
+        assert.equal((await guess()).status, 401);
+        assert.equal((await guess()).status, 429);
+    });
 });
 
 describe("rateLimitMiddleware", () => {

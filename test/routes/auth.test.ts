@@ -121,7 +121,9 @@ describe("GET /v1/users/me", () => {
         const response = await request(app).get("/v1/users/me").set("Authorization", `Bearer ${body.token}`);
 
         assert.equal(response.status, 200);
-        assert.deepEqual(response.body.data, body.data);
+        const { usage, ...account } = response.body.data;
+        assert.deepEqual(account, body.data);
+        assert.deepEqual(usage, { documents: { used: 0, limit: 3 } });
     });
 
     it("requires a token", async () => {
