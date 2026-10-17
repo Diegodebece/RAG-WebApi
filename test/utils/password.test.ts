@@ -38,6 +38,14 @@ describe("verifyPassword", () => {
         assert.equal(await verifyPassword("contraseña con ñ y tildes áé", stored), false);
     });
 
+    it("accepts the same password typed in another Unicode form", async () => {
+        const precomposed = `caf${String.fromCodePoint(0xe9)}`;
+        const decomposed = `cafe${String.fromCodePoint(0x301)}`;
+
+        assert.equal(await verifyPassword(decomposed, await hashPassword(precomposed)), true);
+        assert.equal(await verifyPassword(precomposed, await hashPassword(decomposed)), true);
+    });
+
     it("rejects values that are not a stored scrypt hash", async () => {
         for (const stored of ["", "plain-text-password", "bcrypt$10$abc", "scrypt$16384$8$1$$", "scrypt$16384$8$1$abcd$zz"]) {
             assert.equal(await verifyPassword("anything", stored), false, stored);

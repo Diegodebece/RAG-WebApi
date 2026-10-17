@@ -19,18 +19,25 @@ const INVALID_CREDENTIALS_MESSAGE = "Invalid email or password";
 // Checked against when the email does not exist, so that case takes as long as a wrong password.
 const DUMMY_PASSWORD_HASH = hashPassword(randomBytes(16).toString("hex"));
 
-const createToken = (user: User): string => {
+// server.ts refuses to start without a proper SECRET_KEY; this guards code paths that run without server.ts.
+const getSecretKey = (): string => {
     const secretKey = process.env.SECRET_KEY;
 
     if (!secretKey) {
         throw new Error("SECRET_KEY is not set");
     }
 
+    return secretKey;
+};
+
+const createToken = (user: User, secretKey: string): string => {
     const payload: TokenPayload = { id: user.id, role: user.role };
     return jwt.sign(payload, secretKey, { algorithm: "HS256", expiresIn: TOKEN_LIFETIME_SECONDS });
 };
 
 export const registerUserService = async (userData: RegisterUserInput): Promise<AuthResult> => {
+    // read first, so a missing secret fails before the account is created, not after
+    const secretKey = getSecretKey();
     const { rows: existing } = await pool.query("SELECT 1 FROM users WHERE lower(email) = lower($1)", [userData.email]);
 
     if (existing.length > 0) {
@@ -54,7 +61,7 @@ export const registerUserService = async (userData: RegisterUserInput): Promise<
         throw error;
     }
 
-    return { user, token: createToken(user) };
+    return { user, token: createToken(user, secretKey) };
 };
 
 export const loginUserService = async (loginData: LoginUserInput): Promise<AuthResult> => {
@@ -74,5 +81,5 @@ export const loginUserService = async (loginData: LoginUserInput): Promise<AuthR
     }
 
     const user: User = { id: record.id, email: record.email, role: record.role, createdAt: record.createdAt };
-    return { user, token: createToken(user) };
+    return { user, token: createToken(user, getSecretKey()) };
 };

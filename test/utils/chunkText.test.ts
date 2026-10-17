@@ -64,6 +64,15 @@ describe("chunkText", () => {
         }
     });
 
+    it("chunks a maximum-size document of 200,000 characters quickly, with or without spaces", () => {
+        const started = performance.now();
+
+        chunkText("palabra ".repeat(25000));
+        chunkText("x".repeat(200000));
+
+        assert.ok(performance.now() - started < 1000);
+    });
+
     it("rejects a limit below 2, which a two-unit character could not fit", () => {
         assert.throws(() => chunkText("😀", 1), RangeError);
         assert.throws(() => chunkText("text", 1), RangeError);

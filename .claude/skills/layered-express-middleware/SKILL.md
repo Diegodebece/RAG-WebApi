@@ -39,6 +39,7 @@ When the project needs request limits:
   - `req.validatedBody?: unknown` — Joi output set by `validateBodyMiddleware`. Controllers cast it to the validator's input type.
   - Introduce new `req.*` properties only with a clear English name, declare them in `types/express.d.ts`, and document them here.
 - Async middlewares wrap their body in `try/catch → next(error)`, same as controllers.
+- `errorMiddleware` first checks `res.headersSent`: when part of the response is already out (a stream), it calls `next(err)` and lets Express close the connection instead of sending a second response.
 - `errorMiddleware` keeps the 4-argument signature `(err: unknown, req: Request, res: Response, next: NextFunction)`, is registered last, logs unexpected errors and never leaks their message (generic 500). It narrows `err` with `instanceof AppError` or a type guard, never with `any`.
 - Required config read from `process.env` (e.g. `SECRET_KEY`) is checked before use; if it is missing, call `next(new Error("<NAME> is not set"))` so `errorMiddleware` answers 500. Do not cast it with `as string`.
 - `validateBodyMiddleware` validates `req.body ?? {}`: Express 5 leaves `req.body` undefined for a request without a body, and Joi accepts undefined for an object schema.

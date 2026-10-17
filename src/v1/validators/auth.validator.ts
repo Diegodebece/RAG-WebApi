@@ -10,8 +10,9 @@ export interface LoginUserInput {
     password: string;
 }
 
-// trimmed and lowercased, so an address is stored and compared one way only
-const emailRule = Joi.string().trim().lowercase().email().max(254).required().messages({
+// Normalized to NFC, trimmed and lowercased, so an address is stored and compared one way only:
+// "josé" typed as one character or as "e" plus a combining accent is the same account.
+const emailRule = Joi.string().normalize("NFC").trim().lowercase().email().max(254).required().messages({
     "string.base": "Email must be a string",
     "string.empty": "Email cannot be empty",
     "string.email": "Email must be a valid email address",

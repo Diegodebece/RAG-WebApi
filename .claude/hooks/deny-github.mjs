@@ -26,26 +26,36 @@ const deny = (reason) => {
     process.exit(0);
 };
 
+// "gh" or "git" when the token is that executable, also written as a path (C:\...\gh.exe, /usr/bin/git).
+const toolName = (token) => {
+    const fileName = token.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, "");
+    return fileName === "gh" || fileName === "git" ? fileName : null;
+};
+
 // Returns why a shell command touches GitHub, or null when it is local-only.
 const findGitHubAccess = (command) => {
     if (/github\.com|githubusercontent\.com/i.test(command)) {
         return "The command references a GitHub URL.";
     }
 
-    // quoted strings (paths with spaces, commit messages) become one placeholder token,
-    // so `git -C "RAG project" fetch` parses correctly and `-m "push the fix"` is not a subcommand
-    const unquoted = command.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, "QUOTED");
+    // Quoted strings (paths with spaces, commit messages) become one placeholder token, so
+    // `git -C "RAG project" fetch` parses correctly and `-m "push the fix"` is not a subcommand.
+    // A quoted path to the gh or git executable keeps its file name, so it cannot hide the tool.
+    const unquoted = command.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, (quoted) => {
+        const fileName = toolName(quoted.slice(1, -1));
+        return fileName ?? "QUOTED";
+    });
     const segments = unquoted.split(/&&|\|\||[;|&\n]|\$\(|`/);
 
     for (const segment of segments) {
         const tokens = segment.trim().split(/\s+/).filter(Boolean);
-        const toolIndex = tokens.findIndex((token) => /^(gh|git)(\.exe)?$/i.test(token));
+        const toolIndex = tokens.findIndex((token) => toolName(token) !== null);
 
         if (toolIndex === -1) {
             continue;
         }
 
-        const tool = tokens[toolIndex].toLowerCase().replace(/\.exe$/, "");
+        const tool = toolName(tokens[toolIndex]);
 
         if (tool === "gh") {
             return "The gh CLI talks to GitHub.";
@@ -62,6 +72,10 @@ const findGitHubAccess = (command) => {
         }
         if (subcommand === "remote" && GIT_REMOTE_WRITE_ACTIONS.has(tokens[index + 1])) {
             return `"git remote ${tokens[index + 1]}" configures a remote.`;
+        }
+        // an alias such as `git config alias.sync push` would let `git sync` push without being recognized
+        if (subcommand === "config" && tokens.slice(index + 1).some((token) => /^alias\./i.test(token))) {
+            return "Git aliases can hide network commands.";
         }
     }
 

@@ -28,6 +28,35 @@ const buildFailedLoginApp = (limit: number) => {
     return app;
 };
 
+describe("failed-login limit and account lockout", () => {
+    // Simulates two clients with X-Forwarded-For, which the real app does not trust (trust proxy is off).
+    const buildTwoClientApp = () => {
+        const app = express();
+        app.set("trust proxy", true);
+        app.use(express.json());
+        app.post("/login", rateLimitMiddleware({ limit: 2, windowMs: MINUTE, keyBy: "email", onlyFailures: true }), (req, res) => {
+            res.status(req.body.password === "right" ? 200 : 401).json({});
+        });
+        app.use(errorMiddleware);
+        return app;
+    };
+
+    it(
+        "does not let an attacker lock the owner out of their account",
+        { todo: "decision pending: failed logins are counted per email, so anyone can block an account for 15 minutes" },
+        async () => {
+            const app = request(buildTwoClientApp());
+
+            for (let attempt = 0; attempt < 3; attempt++) {
+                await app.post("/login").set("X-Forwarded-For", "203.0.113.66").send({ email: "victim@example.com", password: "guess" });
+            }
+
+            const owner = await app.post("/login").set("X-Forwarded-For", "198.51.100.7").send({ email: "victim@example.com", password: "right" });
+            assert.equal(owner.status, 200);
+        }
+    );
+});
+
 describe("rateLimitMiddleware", () => {
     it("answers 429 with the usual error body once a client passes the limit", async () => {
         const agent = request(buildIpLimitedApp(2));
@@ -57,6 +86,17 @@ describe("rateLimitMiddleware", () => {
         assert.equal((await app.post("/login").send({ email: "ana@example.com", password: "wrong" })).status, 401);
         assert.equal((await app.post("/login").send({ email: "ana@example.com", password: "wrong" })).status, 401);
         assert.equal((await app.post("/login").send({ email: "ana@example.com", password: "wrong" })).status, 429);
+    });
+
+    it("counts both Unicode spellings of an accented email together", async () => {
+        const app = request(buildFailedLoginApp(2));
+        const precomposed = `jos${String.fromCodePoint(0xe9)}@example.com`;
+        const decomposed = `jose${String.fromCodePoint(0x301)}@example.com`;
+
+        await app.post("/login").send({ email: precomposed, password: "wrong" });
+        await app.post("/login").send({ email: decomposed, password: "wrong" });
+
+        assert.equal((await app.post("/login").send({ email: precomposed, password: "wrong" })).status, 429);
     });
 
     it("counts the same email with any capitalization together, and other emails apart", async () => {

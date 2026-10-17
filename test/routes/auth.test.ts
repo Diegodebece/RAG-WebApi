@@ -8,6 +8,7 @@ import jwt from "jsonwebtoken";
 const SECRET = "test-secret-only-for-these-tests";
 process.env.SECRET_KEY = SECRET;
 process.env.REGISTRATIONS_PER_HOUR = "1000";
+process.env.REGISTRATION_ATTEMPTS_PER_HOUR = "1000";
 process.env.LOGINS_PER_15_MINUTES = "1000";
 process.env.FAILED_LOGINS_PER_EMAIL_PER_15_MINUTES = "1000";
 

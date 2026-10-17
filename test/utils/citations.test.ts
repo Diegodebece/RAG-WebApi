@@ -33,6 +33,18 @@ describe("extractCitationIds", () => {
     });
 });
 
+describe("citation parsing on hostile input", () => {
+    // guards against regular expressions whose running time explodes on crafted text (ReDoS)
+    it("handles 200,000 characters of near-citations in well under a second", () => {
+        const started = performance.now();
+
+        extractCitationIds(`[F1${", F1".repeat(50000)}`);
+        hasValidCitations("[F1 ".repeat(50000), fragments);
+
+        assert.ok(performance.now() - started < 1000);
+    });
+});
+
 describe("hasValidCitations", () => {
     it("accepts an answer whose citations were all provided", () => {
         assert.equal(hasValidCitations("Open the gear icon [F2]; changes save themselves [F3].", fragments), true);
