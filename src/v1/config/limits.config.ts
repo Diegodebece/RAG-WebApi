@@ -23,7 +23,12 @@ export const REGISTRATION_WINDOW_MS = 60 * MINUTE_MS;
 
 export const LOGIN_WINDOW_MS = 15 * MINUTE_MS;
 
+// accounts actually created per address
 export const REGISTRATIONS_PER_HOUR = readPositiveInteger("REGISTRATIONS_PER_HOUR", 3);
+
+// every registration request per address, failed ones included, so a taken email (409) cannot be
+// probed without limit to find out who has an account
+export const REGISTRATION_ATTEMPTS_PER_HOUR = readPositiveInteger("REGISTRATION_ATTEMPTS_PER_HOUR", 20);
 
 export const LOGINS_PER_15_MINUTES = readPositiveInteger("LOGINS_PER_15_MINUTES", 10);
 

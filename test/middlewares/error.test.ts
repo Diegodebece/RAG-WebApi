@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
+import type { Request, Response } from "express";
 import request from "supertest";
 import { errorMiddleware } from "../../src/v1/middlewares/error.middleware.js";
 import { notFoundMiddleware } from "../../src/v1/middlewares/notFound.middleware.js";
@@ -54,6 +55,26 @@ describe("errorMiddleware", () => {
 
         assert.equal(response.status, 500);
         assert.deepEqual(response.body, { message: "Internal server error" });
+    });
+});
+
+describe("errorMiddleware after the response has started", () => {
+    it("hands the error to Express instead of trying to send a second response", () => {
+        const error = new AppError(400, "Too late for a status");
+        const forwarded: unknown[] = [];
+        // a response whose headers are already out: any attempt to send another status must not happen
+        const response = {
+            headersSent: true,
+            status: () => {
+                throw new Error("status() must not be called after the headers were sent");
+            }
+        };
+
+        errorMiddleware(error, {} as Request, response as unknown as Response, (value?: unknown) => {
+            forwarded.push(value);
+        });
+
+        assert.deepEqual(forwarded, [error]);
     });
 });
 

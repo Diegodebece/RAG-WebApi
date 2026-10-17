@@ -13,10 +13,14 @@ const deriveKey = (password: string, salt: Buffer, keyBytes: number, options: Sc
         scrypt(password, salt, keyBytes, options, (error, key) => (error ? reject(error) : resolve(key)));
     });
 
+// The same visible password can arrive in different Unicode forms ("é" as one character, or "e" plus a
+// combining accent, depending on the keyboard). NFKC turns them into one form before hashing, as NIST advises.
+const normalizePassword = (password: string): string => password.normalize("NFKC");
+
 // Returns "scrypt$N$r$p$salt$hash" (salt and hash in hex), the value stored in users.password_hash.
 export const hashPassword = async (password: string): Promise<string> => {
     const salt = randomBytes(SALT_BYTES);
-    const hash = await deriveKey(password, salt, KEY_BYTES, COST);
+    const hash = await deriveKey(normalizePassword(password), salt, KEY_BYTES, COST);
 
     return ["scrypt", COST.N, COST.r, COST.p, salt.toString("hex"), hash.toString("hex")].join("$");
 };
@@ -36,7 +40,7 @@ export const verifyPassword = async (password: string, storedHash: string): Prom
         return false;
     }
 
-    const actual = await deriveKey(password, Buffer.from(saltHex, "hex"), expected.length, {
+    const actual = await deriveKey(normalizePassword(password), Buffer.from(saltHex, "hex"), expected.length, {
         N: Number(N),
         r: Number(r),
         p: Number(p)

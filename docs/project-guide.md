@@ -15,7 +15,8 @@ Contents:
 9. [Authentication layer](#9-authentication-layer)
 10. [Local environment](#10-local-environment)
 11. [Agreed limits](#11-agreed-limits)
-12. [Pending work](#12-pending-work)
+12. [Security review](#12-security-review)
+13. [Pending work](#13-pending-work)
 
 ## 1. Origin and goal
 
@@ -61,7 +62,7 @@ The evaluation also showed that hallucinations come mostly from the answer step,
 The work goes layer by layer. Each layer is planned and discussed first, then written with tests, reviewed, committed on its own `feature/<layer>` branch, pushed, and merged with a pull request.
 
 > [!NOTE]
-> **Decision: GitHub is handled by the author only.** Claude Code may use local git (status, diff, log), but a PreToolUse hook (`.claude/hooks/deny-github.mjs`, registered in `.claude/settings.json`) blocks every GitHub access: the `gh` CLI, `git push`, `pull`, `fetch`, `clone`, `remote add` and `set-url`, GitHub MCP tools, and any command or fetch with a GitHub URL.
+> **Decision: GitHub is handled by the author only.** Claude Code may use local git (status, diff, log), but a PreToolUse hook (`.claude/hooks/deny-github.mjs`, registered in `.claude/settings.json`) blocks every GitHub access: the `gh` CLI, `git push`, `pull`, `fetch`, `clone`, `remote add` and `set-url`, GitHub MCP tools, and any command or fetch with a GitHub URL. It recognizes `gh` and `git` by file name, so a full path such as `"C:\Program Files\GitHub CLI\gh.exe"` does not hide them, and it blocks creating git aliases, which could hide a push behind a new name. Both gaps were found in the security review; `test/hooks/denyGithub.test.ts` runs the hook the way Claude Code does.
 
 > [!NOTE]
 > **Decision: keep private material out of git.** The RAG1 copy used as reference (`RAG project/`) contains private documents and evaluation data, so it is ignored, together with the brief (`/*.pdf`), `.env` and build output. Only `.env.example` is committed.
@@ -323,6 +324,9 @@ The limits come from `src/v1/config/limits.config.ts`, which reads them from `.e
 > [!NOTE]
 > **Decision: failed logins counted per email, not only per address.** An attacker can spread password guesses over many addresses, so failed logins are also counted per email (`onlyFailures: true`, successful logins do not count). The email is trimmed and lowercased, so `Ana@x.com` and `ana@x.com` share a counter.
 
+> [!NOTE]
+> **Decision: errors after the response has started go to Express.** Once part of a response is out, as in a stream, another status cannot be sent. `errorMiddleware` checks `res.headersSent` and calls `next(err)`, so Express closes the connection; before, it tried to send a second response and threw. Found in the security review, before the first streaming endpoint.
+
 ## 9. Authentication layer
 
 The first endpoints. `src/app.ts` builds the app (CORS, JSON body parsing, the `/v1` routes, then the 404 and error handlers) and `src/server.ts` starts it; `npm run dev` runs it from the sources.
@@ -347,7 +351,7 @@ Registering trims and lowercases the email, rejects one that is already taken (4
 > **Decision: login does not reveal which emails exist.** A wrong password and an unknown email get the same 401 "Invalid email or password". For an unknown email the service still verifies the password against a dummy hash, so both cases take about the same time. Registration does reveal a taken email (409), which cannot be avoided without email verification; the registration limit slows down anyone probing for accounts.
 
 > [!NOTE]
-> **Decision: count only successful registrations.** The limit of 3 registrations per address per hour counts accounts actually created (`onlySuccesses`), so a typo or a taken email does not use up an attempt, while mass account creation is still blocked. Logins count every attempt per address, and failed attempts per email.
+> **Decision: two registration limits per address.** At most 3 accounts created per hour (`onlySuccesses`), so a typo or a taken email does not use up one of them, and at most 20 registration requests per hour of any outcome, so a taken email (409) cannot be probed without limit to find out who has an account. The first version had only the successes limit, which left that probing unlimited; found in the security review. Logins count every attempt per address, and failed attempts per email.
 
 > [!NOTE]
 > **Decision: `GET /v1/users/me` instead of the brief's `GET /me`.** The route skill places custom actions under their resource. It returns the account now; quota usage will be added with the documents and questions layers.
@@ -361,9 +365,15 @@ Registering trims and lowercases the email, rejects one that is already taken (4
 > [!NOTE]
 > **Decision: a connection timeout on the pool.** Without `connectionTimeoutMillis`, a query waits forever when PostgreSQL is down, which would make the health check hang instead of reporting the database as down. The pool now gives up after 5 seconds; the skill template has the same setting.
 
+> [!NOTE]
+> **Decision: one Unicode form for emails and passwords.** An accented letter can be one character or a letter plus a combining accent, depending on the keyboard; both look the same. Emails are normalized to NFC before validation, storage and rate-limit counting, so the two spellings cannot become two accounts. Passwords are normalized to NFKC before hashing and verifying, as NIST advises, so a password typed on another device still works. Found in the security review.
+
+> [!NOTE]
+> **Decision: refuse to start with a missing or weak `SECRET_KEY`.** A short or well-known secret lets anyone forge tokens by guessing it offline. `server.ts` exits with a clear message unless `SECRET_KEY` has at least 32 characters and is not the `change-me` placeholder. Registration also reads the secret before creating the account, so a misconfiguration no longer leaves a created account behind a 500 error.
+
 ## 10. Local environment
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#12-pending-work)).
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#13-pending-work)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -377,7 +387,7 @@ These values will become `.env` settings when the endpoints that enforce them ar
 
 | Limit | Value |
 |---|---|
-| Registrations per IP | 3 per hour |
+| Registrations per IP | 3 accounts and 20 attempts per hour |
 | Login attempts per IP | 10 per 15 minutes |
 | Failed logins per email | 5 per 15 minutes |
 | Documents per user | 3 |
@@ -391,10 +401,35 @@ These values will become `.env` settings when the endpoints that enforce them ar
 > [!NOTE]
 > **Decision: stricter limits than the brief's examples.** Registration is limited to 3 per IP per hour (shared networks such as universities still work) and documents are deleted after 24 hours instead of 7 days. Behind Cloudflare the API must read the real client IP from `CF-Connecting-IP`, trusted only for requests that come through the tunnel; otherwise every request would look like the tunnel's and share one limit.
 
-## 12. Pending work
+## 12. Security review
+
+On 2026-10-17 the whole project was reviewed for bugs and vulnerabilities. Every suspicion was first probed against the real app on the test database; each confirmed problem got a test that fails on the old code and passes with the fix (checked by running the new tests with the fixes stashed).
+
+| Finding | Status | Test |
+|---|---|---|
+| A taken email could be probed without limit through registration (409s were not counted) | Fixed: second limit of 20 attempts per hour | `registerAttempts.test.ts` |
+| The same accented email in two Unicode forms created two accounts | Fixed: NFC normalization | `authSecurity.test.ts` |
+| A password typed in another Unicode form did not match | Fixed: NFKC before hashing | `password.test.ts`, `authSecurity.test.ts` |
+| A missing `SECRET_KEY` created the account and then failed; a weak one was accepted | Fixed: startup check, secret read first | `env.test.ts`, `authSecurity.test.ts` |
+| `errorMiddleware` threw when the response had already started | Fixed: delegates to Express | `error.test.ts` |
+| The GitHub hook missed full paths to `gh.exe` / `git.exe` and git aliases | Fixed | `denyGithub.test.ts` |
+| Anyone can lock an account for 15 minutes with failed logins on its email | **Open decision** | `rateLimit.test.ts` (todo) |
+
+Checked and already safe, now covered by tests: a `__proto__` key cannot grant a role; null bytes and 90,000-character emails get a 400, not a database error or a slow response; bodies over 100 KB get a 413; non-object and form-array bodies get a 400; two simultaneous registrations of one email create one account; a spoofed `X-Forwarded-For` header does not reset a limit; the health check reports a dead database in time instead of hanging; the citation and chunking code handle 200,000 hostile characters in milliseconds (no ReDoS).
+
+**The open decision: account lockout.** Failed logins are counted per email (5 per 15 minutes), which stops password guessing spread over many addresses but lets anyone block a victim by failing on purpose. Options:
+
+1. Count failed logins per email *and* address: an attacker can no longer lock out the owner, who logs in from another address; guessing spread over many addresses gets 5 tries per address, still capped by the 10 logins per address.
+2. Keep per-email counting and add a challenge (Turnstile) after a few failures instead of blocking, once the frontend exists.
+3. Keep it as it is and accept the risk for the proof of concept.
+
+Notes that need no test now: validation `details` echo the names of unknown fields, so the frontend must show them as text, never as HTML; `/v1/health` has no rate limit (each call is one `SELECT 1` and one small Ollama request); passwords are not checked against a list of common passwords, which NIST recommends; a token keeps its role until it expires (1 hour), so demoting an admin takes effect after that; a token can outlive its account, and future inserts with that user id would fail the foreign key (`23503`), which the documents layer must answer with a 4xx.
+
+## 13. Pending work
 
 - **Malformed ids:** an id that is not even a UUID (`/documents/abc`) makes PostgreSQL fail with code `22P02`, which would become a 500. To be solved in the route layer, probably as a 404.
 - **Next layer:** documents (upload, list, delete) with the persisted indexing queue.
+- **Account lockout:** choose an option from the [security review](#12-security-review) and turn its todo test into a normal one.
 - **CORS:** `cors()` accepts every origin for now, which is safe while tokens travel in a header (no cookies). Restrict it to the frontend domain when the frontend is deployed.
 - **Health with the database down:** `checkDatabase` reports `down` when the query fails or the 5-second connection timeout passes, but no automated test covers that case yet.
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.

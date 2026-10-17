@@ -8,6 +8,12 @@ const isClientError = (err: unknown): err is Error & { status: number } =>
     && "status" in err && typeof err.status === "number" && err.status < 500;
 
 export const errorMiddleware = (err: unknown, req: Request, res: Response, next: NextFunction) => {
+    // Part of the response is already out (for example a stream): another status or body cannot be sent.
+    // Express default handler closes the connection instead.
+    if (res.headersSent) {
+        return next(err);
+    }
+
     if (err instanceof AppError) {
         const response: { message: string; details?: string[] } = { message: err.message };
         if (err.details) {

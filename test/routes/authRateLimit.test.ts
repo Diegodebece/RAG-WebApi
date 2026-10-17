@@ -5,6 +5,7 @@ import request from "supertest";
 // Low limits, set before the app is imported (each test file runs in its own process, with its own counters).
 process.env.SECRET_KEY = "test-secret-only-for-these-tests";
 process.env.REGISTRATIONS_PER_HOUR = "2";
+process.env.REGISTRATION_ATTEMPTS_PER_HOUR = "1000";
 process.env.LOGINS_PER_15_MINUTES = "4";
 process.env.FAILED_LOGINS_PER_EMAIL_PER_15_MINUTES = "2";
 

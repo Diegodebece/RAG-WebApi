@@ -7,6 +7,7 @@ import {
     FAILED_LOGINS_PER_EMAIL_PER_15_MINUTES,
     LOGIN_WINDOW_MS,
     LOGINS_PER_15_MINUTES,
+    REGISTRATION_ATTEMPTS_PER_HOUR,
     REGISTRATION_WINDOW_MS,
     REGISTRATIONS_PER_HOUR
 } from "../config/limits.config.js";
@@ -15,6 +16,7 @@ export const authRouter = express.Router({ mergeParams: true });
 
 authRouter.post(
     "/register",
+    rateLimitMiddleware({ limit: REGISTRATION_ATTEMPTS_PER_HOUR, windowMs: REGISTRATION_WINDOW_MS, keyBy: "ip" }),
     rateLimitMiddleware({ limit: REGISTRATIONS_PER_HOUR, windowMs: REGISTRATION_WINDOW_MS, keyBy: "ip", onlySuccesses: true }),
     validateBodyMiddleware(registerUserSchema),
     registerUser

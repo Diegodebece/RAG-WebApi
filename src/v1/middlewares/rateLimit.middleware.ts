@@ -17,12 +17,13 @@ interface RateLimitOptions {
 // Behind Cloudflare, req.ip must come from CF-Connecting-IP; that is configured with the tunnel (deployment step).
 const clientAddressKey = (req: Request): string => ipKeyGenerator(req.ip ?? "unknown");
 
-// Email limits read the raw body, so they must run after express.json(). Without an email, the address is the key.
+// Email limits read the raw body, so they must run after express.json(). The email is normalized like the validator
+// does (NFC, trimmed, lowercased) so every spelling of one address shares a counter. Without an email, the address is the key.
 const emailKey = (req: Request): string => {
     const email: unknown = req.body?.email;
 
     return typeof email === "string" && email.trim() !== ""
-        ? `email:${email.trim().toLowerCase()}`
+        ? `email:${email.normalize("NFC").trim().toLowerCase()}`
         : clientAddressKey(req);
 };
 
