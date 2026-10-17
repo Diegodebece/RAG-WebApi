@@ -21,6 +21,7 @@ description: How to write the service (business logic) layer of an Express API. 
 - [templates/products.service.ts](templates/products.service.ts) — CRUD with PostgreSQL through `pg`
 - [templates/dbErrors.util.ts](templates/dbErrors.util.ts) — `isUniqueViolation`, goes in `utils/`
 - [templates/uuid.util.ts](templates/uuid.util.ts) — `isUuid`, goes in `utils/`
+- [templates/modelUnavailableError.util.ts](templates/modelUnavailableError.util.ts) — example of an `AppError` subclass that callers recognize by type, goes in `utils/`
 
 The template assumes PostgreSQL with `pg` and the `pool` / `withTransaction` from `config/db.config.ts` (see `layered-express-structure`). A project with another data layer keeps the same rules and swaps the queries.
 
@@ -42,6 +43,8 @@ The template assumes PostgreSQL with `pg` and the `pool` / `withTransaction` fro
   | a dependency did not answer in time | 504 |
 
   Messages are short English sentences: "Product not found".
+- When a caller must react to one specific failure (for example, background work retrying later when a dependency is down), throw an `AppError` subclass in `utils/<name>Error.util.ts` (e.g. `ModelUnavailableError`, 503) and check it with `instanceof`. Never branch on `error.status === 503`: another 503 would trigger the same reaction.
+- One reason to change per service file. For example, background work is split into its event observer (`jobEvents.service.ts`), the work for one job (`indexing.service.ts`) and the scheduling of the queue (`jobQueue.service.ts`), instead of one file doing all three.
 - Never throw `Error` with a `.status`, never use status `200` in an `AppError`, and use `5xx` only for the 503/504 cases above: any other 5xx is an unexpected error that must bubble up to `errorMiddleware`'s generic 500. Do not catch errors just to rethrow them; let unexpected errors bubble up.
 - `getById`, `update` and `delete` always 404 when the resource does not exist.
 - `update` re-checks uniqueness only for the fields being changed, excluding the current record.

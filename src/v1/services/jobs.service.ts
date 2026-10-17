@@ -18,8 +18,13 @@ export const getJobByIdService = async (userId: string, id: string): Promise<Job
                     SELECT count(*)::int FROM jobs q
                     WHERE q.status = 'queued' AND (q.created_at, q.id) <= (j.created_at, j.id)
                 ) END AS "queuePosition",
+                json_build_object(
+                    'done', (SELECT count(*)::int FROM chunks c WHERE c.document_id = j.document_id AND c.embedding IS NOT NULL),
+                    'total', d.chunk_count
+                ) AS progress,
                 j.created_at AS "createdAt", j.started_at AS "startedAt", j.finished_at AS "finishedAt"
          FROM jobs j
+         JOIN documents d ON d.id = j.document_id
          WHERE j.id = $1 AND j.user_id = $2`,
         [id, userId]
     );

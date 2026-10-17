@@ -12,6 +12,7 @@ describe("migrate script", () => {
         const output = await runMigrateScript();
 
         assert.match(output, /Applied 001_init\.sql/);
+        assert.match(output, /Applied 002_upload_usage\.sql/);
 
         const { rows } = await pool.query<{ table_name: string }>(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
@@ -22,6 +23,7 @@ describe("migrate script", () => {
             "jobs",
             "question_usage",
             "schema_migrations",
+            "upload_usage",
             "users"
         ]);
     });
@@ -37,7 +39,7 @@ describe("migrate script", () => {
 
         assert.match(output, /Database is up to date/);
 
-        const { rows } = await pool.query<{ version: string }>("SELECT version FROM schema_migrations");
-        assert.deepEqual(rows.map((row) => row.version), ["001_init.sql"]);
+        const { rows } = await pool.query<{ version: string }>("SELECT version FROM schema_migrations ORDER BY version");
+        assert.deepEqual(rows.map((row) => row.version), ["001_init.sql", "002_upload_usage.sql"]);
     });
 });

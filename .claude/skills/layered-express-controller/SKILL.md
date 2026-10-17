@@ -20,6 +20,8 @@ description: How to write Express controllers. Use when creating or editing any 
 
 [templates/products.controller.ts](templates/products.controller.ts)
 
+[templates/requireUserId.util.ts](templates/requireUserId.util.ts) — goes in `utils/`
+
 ## 4. Rules
 
 - Signature is always `export const name = async (req: Request, res: Response, next: NextFunction) => { ... };`, with `import type { Request, Response, NextFunction } from "express";`. Let TypeScript infer the return type.
@@ -27,8 +29,8 @@ description: How to write Express controllers. Use when creating or editing any 
 - Inputs come only from:
   - `req.params` (ids are UUID strings: `const { id } = req.params;`, passed as they are). A handler that reads params declares them in its signature, `req: Request<{ id: string }>`; with a plain `Request`, Express 5 types each param as `string | string[]`. `req.query` (`page`, `limit`, filters),
   - `req.validatedBody` (**never** `req.body`), cast to the input type exported by the validator: `req.validatedBody as CreateProductInput`,
-  - `req.decoded` (logged-in user: `id`, `role`, ...). It is optional in the type; in routers mounted in the protected section use `req.decoded!.id`.
-- Pass plain values to the service, never `req` or `res`. When ownership matters, pass the user id as the first argument: `createWatchlistItemService(req.decoded!.id, req.validatedBody as CreateWatchlistItemInput)`.
+  - `req.decoded` (logged-in user: `id`, `role`, ...), read through `requireUserId(req)` from `utils/requireUserId.util.ts`. Never `req.decoded!.id`: if a router is ever mounted without `authenticateMiddleware`, `requireUserId` throws a 401 `AppError` (forwarded by the `catch`) instead of crashing into a 500.
+- Pass plain values to the service, never `req` or `res`. When ownership matters, pass the user id as the first argument: `createWatchlistItemService(requireUserId(req), req.validatedBody as CreateWatchlistItemInput)`.
 - Always `return res.status(<code>).json({ success: true, message, data })`:
   - 200 for get/update/delete, 201 for create.
   - `message` is a short English sentence: "Product created successfully".

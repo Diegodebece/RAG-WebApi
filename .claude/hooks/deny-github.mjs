@@ -1,11 +1,24 @@
-// PreToolUse hook: deny every GitHub access so the user handles GitHub themselves.
-// Blocks GitHub MCP tools, WebFetch to GitHub, the gh CLI, git network commands and any
-// shell command that mentions github.com. Local git (init, add, commit, status, ...) stays allowed.
+// PreToolUse hook: the user handles GitHub and branches in this project, so Claude Code may not.
+// Blocks GitHub MCP tools, WebFetch to GitHub, the gh CLI, git network commands, any shell command that
+// mentions github.com, and every way of creating, switching, moving or deleting a branch or worktree.
+// Local git (add, commit, status, diff, log, listing branches, restoring files, ...) stays allowed.
 
 const GIT_NETWORK_SUBCOMMANDS = new Set(["push", "pull", "fetch", "clone", "ls-remote", "submodule"]);
 const GIT_REMOTE_WRITE_ACTIONS = new Set(["add", "set-url"]);
 // git options that take a separate value: `git -C <path> push`
 const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
+
+// `git branch` options that only list; with one of them, a name is a pattern, not a branch to create
+const BRANCH_LISTING_OPTIONS = new Set([
+    "-l", "--list", "-a", "--all", "-r", "--remotes", "--show-current",
+    "--contains", "--no-contains", "--merged", "--no-merged", "--points-at"
+]);
+// `git branch` options that delete a branch or move an existing one to another commit
+const BRANCH_DESTRUCTIVE_OPTIONS = new Set(["-d", "-D", "--delete", "-f", "--force"]);
+// `git branch` options that create a branch under a new name
+const BRANCH_RENAMING_OPTIONS = new Set(["-m", "-M", "--move", "-c", "-C", "--copy"]);
+// `git branch` options that take a separate value, which is not a branch name to create
+const BRANCH_OPTIONS_WITH_VALUE = new Set(["-u", "--set-upstream-to", "--format", "--sort", "--color", "--column"]);
 
 const readStdin = async () => {
     const chunks = [];
@@ -20,7 +33,7 @@ const deny = (reason) => {
         hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "deny",
-            permissionDecisionReason: `${reason} GitHub is handled by the user in this project: give them the exact command to run instead.`
+            permissionDecisionReason: `${reason} The user handles GitHub and branches in this project: give them the exact command to run instead.`
         }
     }));
     process.exit(0);
@@ -32,8 +45,31 @@ const toolName = (token) => {
     return fileName === "gh" || fileName === "git" ? fileName : null;
 };
 
-// Returns why a shell command touches GitHub, or null when it is local-only.
-const findGitHubAccess = (command) => {
+// Why `git branch <args>` changes branches, or null when it only lists or configures.
+const findBranchChange = (args) => {
+    if (args.some((token) => BRANCH_DESTRUCTIVE_OPTIONS.has(token))) {
+        return "Deleting or moving a branch changes the user's branches.";
+    }
+    if (args.some((token) => BRANCH_RENAMING_OPTIONS.has(token))) {
+        return "Renaming or copying a branch creates a new branch name.";
+    }
+    if (args.some((token) => BRANCH_LISTING_OPTIONS.has(token))) {
+        return null;
+    }
+
+    for (let index = 0; index < args.length; index++) {
+        if (BRANCH_OPTIONS_WITH_VALUE.has(args[index])) {
+            index++;
+        } else if (!args[index].startsWith("-")) {
+            return `"git branch ${args[index]}" creates a branch.`;
+        }
+    }
+
+    return null;
+};
+
+// Returns why a shell command touches GitHub or creates a branch, or null when it is local-only.
+const findBlockedGitAction = (command) => {
     if (/github\.com|githubusercontent\.com/i.test(command)) {
         return "The command references a GitHub URL.";
     }
@@ -77,6 +113,28 @@ const findGitHubAccess = (command) => {
         if (subcommand === "config" && tokens.slice(index + 1).some((token) => /^alias\./i.test(token))) {
             return "Git aliases can hide network commands.";
         }
+
+        const args = tokens.slice(index + 1);
+        if (subcommand === "switch") {
+            return "\"git switch\" changes or creates branches.";
+        }
+        // `git checkout -- <files>` only restores files; without `--`, a name may be a branch to switch to
+        // (or a branch to create with -b), and it cannot be told apart from a file name. `git restore` stays allowed.
+        if (subcommand === "checkout" && !args.includes("--")) {
+            return "\"git checkout\" without \"--\" can switch or create branches; use \"git restore\" for files.";
+        }
+        if (subcommand === "branch") {
+            const reason = findBranchChange(args);
+            if (reason) {
+                return reason;
+            }
+        }
+        if (subcommand === "stash" && args[0] === "branch") {
+            return "\"git stash branch\" creates a branch.";
+        }
+        if (subcommand === "worktree" && args[0] === "add") {
+            return "\"git worktree add\" creates a worktree and usually a branch.";
+        }
     }
 
     return null;
@@ -95,8 +153,12 @@ const main = async () => {
         deny("Fetching GitHub pages is blocked.");
     }
 
+    if (toolName === "EnterWorktree") {
+        deny("Creating a worktree also creates a branch.");
+    }
+
     if (toolName === "Bash" || toolName === "PowerShell") {
-        const reason = findGitHubAccess(String(toolInput.command ?? ""));
+        const reason = findBlockedGitAction(String(toolInput.command ?? ""));
         if (reason) {
             deny(reason);
         }

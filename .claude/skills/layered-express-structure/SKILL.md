@@ -122,10 +122,11 @@ v1.routes.ts → <entities>.routes.ts → middlewares → <entities>.controller.
 
 ### Wiring
 
-- `app.ts` order: `import "dotenv/config"` first → `cors` → `express.json()` → `express.urlencoded({ extended: true })` → `app.use("/v1", v1Router)` → `notFoundMiddleware` → `errorMiddleware` (always last).
+- `app.ts` order: `import "dotenv/config"` first → `app.disable("x-powered-by")` → `securityHeadersMiddleware` → `cors` → `app.use("/v1", v1Router)` → `notFoundMiddleware` → `errorMiddleware` (always last).
+- No global body parser and no `express.urlencoded`: the API only accepts JSON, and each route that takes a body parses it with its own `express.json()` (see `layered-express-route`). A global parser would read the body of requests that authentication or a rate limit is about to reject, and routes that need a larger limit would need path checks in `app.ts`.
 - `app.ts` exports `app`; only `server.ts` calls `listen`, so the app can be reused by Vercel and tests.
 - Database connection setup lives in `config/db.config.ts`.
-- Every new project starts with: `tsconfig.json`, `utils/appError.util.ts`, `types/express.d.ts`, `types/auth.type.ts`, plus the core middlewares from the `layered-express-middleware` skill (`error`, `notFound`, `validateBody`, `authenticate`, `authorize`).
+- Every new project starts with: `tsconfig.json`, `utils/appError.util.ts`, `types/express.d.ts`, `types/auth.type.ts`, the core middlewares from the `layered-express-middleware` skill (`error`, `notFound`, `validateBody`, `authenticate`, `authorize`, `securityHeaders`) with `config/auth.config.ts` and `utils/token.util.ts`, and `utils/requireUserId.util.ts` from the `layered-express-controller` skill.
 - **Adding a new resource** — create files in this order, loading each layer's skill:
   0. `migrations/NNN_<description>.sql` when the resource needs new tables or columns
   1. `types/<entities>.type.ts` (entity shape)

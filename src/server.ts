@@ -2,6 +2,8 @@ import { app } from "./app.js";
 import { getStartupConfigProblems } from "./v1/config/env.config.js";
 import { CLEANUP_INTERVAL_MS } from "./v1/config/limits.config.js";
 import { deleteExpiredDataService } from "./v1/services/cleanup.service.js";
+import { subscribeToJobEvents } from "./v1/services/jobEvents.service.js";
+import { recoverJobsService, startJobWorkerService } from "./v1/services/jobQueue.service.js";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -15,21 +17,46 @@ if (problems.length > 0) {
     process.exit(1);
 }
 
-// Deletes expired documents and old question records; a failure is logged and retried on the next run.
+// Deletes expired documents and old upload and question records; a failure is logged and retried on the next run.
 const runCleanup = async (): Promise<void> => {
     try {
         const removed = await deleteExpiredDataService();
 
-        if (removed.documents > 0 || removed.questionUsage > 0) {
-            console.log(`Cleanup: ${removed.documents} expired document(s), ${removed.questionUsage} old question record(s)`);
+        if (removed.documents > 0 || removed.uploadUsage > 0 || removed.questionUsage > 0) {
+            console.log(`Cleanup: ${removed.documents} expired document(s), ${removed.uploadUsage + removed.questionUsage} old usage record(s)`);
         }
     } catch (error) {
         console.error("Cleanup failed", error);
     }
 };
 
-app.listen(PORT, HOST, () => {
-    console.log(`Server running on http://${HOST}:${PORT}`);
+// one observer of the job queue: the log (the SSE stream will be another)
+subscribeToJobEvents((event) => {
+    if (event.type === "done") {
+        console.log(`Job ${event.jobId}: document ${event.documentId} indexed`);
+    } else if (event.type === "failed") {
+        console.log(`Job ${event.jobId} failed: ${event.error}`);
+    }
+});
+
+// Jobs interrupted by the last shutdown go back to the queue before the worker starts.
+const startBackgroundWork = async (): Promise<void> => {
+    try {
+        const recovered = await recoverJobsService();
+
+        if (recovered > 0) {
+            console.log(`Resuming ${recovered} interrupted indexing job(s)`);
+        }
+    } catch (error) {
+        console.error("Could not recover interrupted jobs", error);
+    }
+
+    startJobWorkerService();
     void runCleanup();
     setInterval(() => void runCleanup(), CLEANUP_INTERVAL_MS);
+};
+
+app.listen(PORT, HOST, () => {
+    console.log(`Server running on http://${HOST}:${PORT}`);
+    void startBackgroundWork();
 });

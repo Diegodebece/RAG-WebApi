@@ -49,4 +49,11 @@ describe("rate limits on the auth routes", () => {
         assert.equal((await request(app).post("/v1/auth/login").send({ email: "y@example.com", password })).status, 401);
         assert.equal((await request(app).post("/v1/auth/login").send({ email: "z@example.com", password })).status, 429);
     });
+
+    it("answers an address over the limit before reading the request body", async () => {
+        // a malformed body would be a 400 if it were parsed first
+        const response = await request(app).post("/v1/auth/login").set("Content-Type", "application/json").send("{");
+
+        assert.equal(response.status, 429);
+    });
 });

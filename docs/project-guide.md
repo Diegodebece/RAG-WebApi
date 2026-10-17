@@ -13,11 +13,12 @@ Contents:
 7. [Database layer](#7-database-layer)
 8. [Middleware layer](#8-middleware-layer)
 9. [Authentication layer](#9-authentication-layer)
-10. [Documents layer (part A)](#10-documents-layer-part-a-storage-and-jobs)
+10. [Documents layer](#10-documents-layer)
 11. [Local environment](#11-local-environment)
 12. [Agreed limits](#12-agreed-limits)
 13. [Security review](#13-security-review)
-14. [Pending work](#14-pending-work)
+14. [Second review: security and architecture](#14-second-review-security-and-architecture)
+15. [Pending work](#15-pending-work)
 
 ## 1. Origin and goal
 
@@ -63,7 +64,9 @@ The evaluation also showed that hallucinations come mostly from the answer step,
 The work goes layer by layer. Each layer is planned and discussed first, then written with tests, reviewed, committed on its own `feature/<layer>` branch, pushed, and merged with a pull request.
 
 > [!NOTE]
-> **Decision: GitHub is handled by the author only.** Claude Code may use local git (status, diff, log), but a PreToolUse hook (`.claude/hooks/deny-github.mjs`, registered in `.claude/settings.json`) blocks every GitHub access: the `gh` CLI, `git push`, `pull`, `fetch`, `clone`, `remote add` and `set-url`, GitHub MCP tools, and any command or fetch with a GitHub URL. It recognizes `gh` and `git` by file name, so a full path such as `"C:\Program Files\GitHub CLI\gh.exe"` does not hide them, and it blocks creating git aliases, which could hide a push behind a new name. Both gaps were found in the security review; `test/hooks/denyGithub.test.ts` runs the hook the way Claude Code does.
+> **Decision: GitHub and branches are handled by the author only.** Claude Code also may not create, switch, move or delete branches or worktrees: `git switch` in any form, `git checkout` without `--` (with `--` it only restores files), `git branch <name>`, `-m`, `-c`, `-d`, `-D` and `-f`, `git stash branch`, `git worktree add` and the `EnterWorktree` tool. Listing branches, `git restore` and `git checkout -- <files>` stay allowed. Added after Claude created a branch on its own; switching and deleting were added right after.
+>
+> **Originally:** Claude Code may use local git (status, diff, log), but a PreToolUse hook (`.claude/hooks/deny-github.mjs`, registered in `.claude/settings.json`) blocks every GitHub access: the `gh` CLI, `git push`, `pull`, `fetch`, `clone`, `remote add` and `set-url`, GitHub MCP tools, and any command or fetch with a GitHub URL. It recognizes `gh` and `git` by file name, so a full path such as `"C:\Program Files\GitHub CLI\gh.exe"` does not hide them, and it blocks creating git aliases, which could hide a push behind a new name. Both gaps were found in the security review; `test/hooks/denyGithub.test.ts` runs the hook the way Claude Code does.
 
 > [!NOTE]
 > **Decision: keep private material out of git.** The RAG1 copy used as reference (`RAG project/`) contains private documents and evaluation data, so it is ignored, together with the brief (`/*.pdf`), `.env` and build output. Only `.env.example` is committed.
@@ -307,9 +310,10 @@ Middlewares run before the controllers and handle what every route shares. They 
 | `errorMiddleware` | The only place that writes error responses: an `AppError` becomes its status and `{ message }` (plus `details`), malformed JSON becomes a 400, and anything unexpected becomes a generic 500 whose real message is only logged |
 | `notFoundMiddleware` | Unknown routes answer 404 |
 | `validateBodyMiddleware(schema)` | Validates the body with Joi and passes the cleaned result as `req.validatedBody`; all problems are reported at once in `details` |
-| `authenticateMiddleware` | Reads the `Authorization: Bearer <token>` header, verifies the JWT with `SECRET_KEY` and puts its payload (`id`, `role`) in `req.decoded` |
+| `authenticateMiddleware` | Reads the `Authorization: Bearer <token>` header, verifies the JWT with `verifyToken` (`utils/token.util.ts`), which also checks the payload's shape, and puts `id` and `role` in `req.decoded` |
 | `authorizeMiddleware(roles)` | 401 when there is no logged-in user, 403 when the user's role is not in the list |
 | `rateLimitMiddleware(options)` | Counts requests per client address or per email and answers 429 when a limit is passed |
+| `securityHeadersMiddleware` | Adds `Cache-Control: no-store`, `nosniff`, a restrictive CSP and anti-framing headers to every response |
 
 The limits come from `src/v1/config/limits.config.ts`, which reads them from `.env` with the agreed values as defaults and stops the app at startup if a value is not a positive integer.
 
@@ -330,7 +334,7 @@ The limits come from `src/v1/config/limits.config.ts`, which reads them from `.e
 
 ## 9. Authentication layer
 
-The first endpoints. `src/app.ts` builds the app (CORS, JSON body parsing, the `/v1` routes, then the 404 and error handlers) and `src/server.ts` starts it; `npm run dev` runs it from the sources.
+The first endpoints. `src/app.ts` builds the app (security headers, CORS, the `/v1` routes, then the 404 and error handlers; each route parses its own JSON body) and `src/server.ts` starts it; `npm run dev` runs it from the sources.
 
 | Endpoint | Access | Files |
 |---|---|---|
@@ -340,7 +344,7 @@ The first endpoints. `src/app.ts` builds the app (CORS, JSON body parsing, the `
 
 `v1.routes.ts` mounts the public routers first, then `authenticateMiddleware`, then the protected ones. Everything after that line needs a token, including paths that do not exist: without a token an unknown `/v1` path answers 401, with one it answers 404, so anonymous clients learn nothing about which routes exist.
 
-Registering trims and lowercases the email, rejects one that is already taken (409), hashes the password and returns the new user with a token. Logging in looks the user up by email, verifies the password and returns the user with a token. The token carries `{ id, role }`, is signed with `SECRET_KEY` using HS256 and expires after 1 hour. Tests in `test/routes/` call the real app with `supertest` against the test database; `health.test.ts` uses a fake Ollama so it does not depend on the real one.
+Registering trims and lowercases the email, rejects one that is already taken (409), hashes the password and returns the new user with a token. Logging in looks the user up by email, verifies the password and returns the user with a token. The token carries `{ id, role }`, is signed with `SECRET_KEY` using HS256 and expires after 1 hour; signing and verifying both live in `utils/token.util.ts`. Tests in `test/routes/` call the real app with `supertest` against the test database; `health.test.ts` uses a fake Ollama so it does not depend on the real one.
 
 > [!NOTE]
 > **Decision: scrypt hashes that carry their own parameters.** Passwords are hashed with Node's built-in `crypto.scrypt` (as the brief proposed), with a random 16-byte salt, and stored as `scrypt$N$r$p$salt$hash`. Because the cost parameters travel with each hash, they can be raised later without breaking existing passwords. Verification uses `timingSafeEqual`, which takes the same time whichever byte differs.
@@ -372,9 +376,11 @@ Registering trims and lowercases the email, rejects one that is already taken (4
 > [!NOTE]
 > **Decision: refuse to start with a missing or weak `SECRET_KEY`.** A short or well-known secret lets anyone forge tokens by guessing it offline. `server.ts` exits with a clear message unless `SECRET_KEY` has at least 32 characters and is not the `change-me` placeholder. Registration also reads the secret before creating the account, so a misconfiguration no longer leaves a created account behind a 500 error.
 
-## 10. Documents layer (part A: storage and jobs)
+## 10. Documents layer
 
-Uploading stores a document and queues its indexing; computing the embeddings with Ollama is part B. All routes are protected and only ever touch the caller's own rows.
+### Part A: storage and jobs
+
+Uploading stores a document and queues its indexing; computing the embeddings is part B, below. All routes are protected and only ever touch the caller's own rows.
 
 | Endpoint | What it does |
 |---|---|
@@ -384,7 +390,7 @@ Uploading stores a document and queues its indexing; computing the embeddings wi
 | `DELETE /v1/documents/:id` | Deletes it; its chunks and jobs go with it |
 | `GET /v1/jobs/:id` | The job's status and its position in the queue, for polling until indexing finishes |
 
-An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` now reports `usage.documents` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours and question records older than the daily quota window.
+An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), when they already uploaded 3 documents in the last 24 hours, deleted ones included (429, see [section 14](#14-second-review-security-and-architecture)), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` reports `usage.documents` and `usage.uploadsToday` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours, and upload and question records older than the daily window.
 
 > [!NOTE]
 > **Decision: 202 Accepted for uploads.** The skills answer creations with 201, but an uploaded document cannot be used until its embeddings exist; 202 says exactly that, and the brief specified it. The client polls `GET /v1/jobs/:id` (and later listens to the event stream) to know when it is ready.
@@ -407,9 +413,32 @@ An upload is refused when the user already has 3 documents (409), when another o
 > [!NOTE]
 > **Decision: chunks inserted in one statement.** All chunks of a document go in with one `INSERT ... SELECT ... FROM unnest($2::text[]) WITH ORDINALITY`, which numbers them in text order, instead of one query per chunk.
 
+### Part B: the indexing queue
+
+Three services share the work, all in `src/v1/services/`: `jobQueue.service.ts` takes the queued jobs one at a time inside the API process, `indexing.service.ts` runs one job and `jobEvents.service.ts` delivers its events; `ollama.service.ts` talks to Ollama. For each job the worker marks the document `indexing`, embeds the chunks that still have no vector in batches of 10, stores each batch with one `UPDATE`, and finally marks the document `ready` and the job `done`. `GET /v1/jobs/:id` reports `progress` (chunks with a vector out of the total) for polling.
+
+The queue follows the brief's observer pattern: `subscribeToJobEvents(listener)` receives `started`, `progress` (after every batch) and `done` / `failed` events. Today the only listener is the log in `server.ts`; the event stream to the browser will be the second. The `queued` event with the live queue position comes with that stream.
+
+Measured with the real models on the laptop (RTX 4070): 10 chunks of about 1,000 characters embed in about 200 ms once the model is loaded; loading `qwen3-embedding:0.6b` takes about 4 seconds; the very first load after Ollama starts took about 55 seconds, during which progress stays at 0.
+
+> [!NOTE]
+> **Decision: the worker runs inside the API and only when `server.ts` starts it.** One process and one job at a time, as the brief planned, with the jobs table as the persisted queue (no Redis). Uploads notify the worker, and it also polls every 10 seconds. Tests and scripts that import the app never start indexing on their own: the queue tests call it directly, against a fake Ollama.
+
+> [!NOTE]
+> **Decision: batches of 10 chunks per Ollama request.** RAG1 sent one request per chunk. Ollama's `/api/embed` accepts a list, so the worker sends 10 at a time, which is faster and also fixes the progress rhythm the brief asked for (at most every 10 chunks). `truncate: false` makes Ollama fail instead of silently embedding only part of a chunk.
+
+> [!NOTE]
+> **Decision: Ollama unreachable means "try later", not "failed".** On a laptop, Ollama not running yet is the usual cause. Such a job (recognized by its error type, `ModelUnavailableError`) goes back to the queue, keeping the vectors already stored, and the worker retries on its next poll. A slow answer (504) or a malformed one (wrong number of vectors or dimensions) fails the job: retrying would not fix a wrong model. Only messages written for users (from `AppError`) are stored in `jobs.error`; anything else is logged and reported as "Indexing failed".
+
+> [!NOTE]
+> **Decision: resume instead of restart.** Because chunks are stored before their vectors, a job interrupted by a shutdown is put back in the queue at startup (`recoverJobsService`) and only embeds the chunks still missing a vector. A document deleted during indexing makes the worker stop without errors or events.
+
+> [!NOTE]
+> **Decision: `FOR UPDATE SKIP LOCKED` when taking a job.** With a single worker it changes nothing, but it is the standard way to keep two workers from taking the same job, so the queue stays correct if the API ever runs twice. Two calls to start the queue at the same moment also share one run, which a test checks (every chunk embedded exactly once, the oldest job first).
+
 ## 11. Local environment
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#14-pending-work)).
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#15-pending-work)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -419,7 +448,7 @@ During development only PostgreSQL runs in Docker; the API runs on the host with
 
 ## 12. Agreed limits
 
-These values will become `.env` settings when the endpoints that enforce them are built.
+The enforced values can be changed in `.env` (see `.env.example`); the question limits arrive with their layer.
 
 | Limit | Value |
 |---|---|
@@ -427,6 +456,7 @@ These values will become `.env` settings when the endpoints that enforce them ar
 | Login attempts per IP | 10 per 15 minutes |
 | Failed logins per email | 5 per 15 minutes |
 | Documents per user | 3 |
+| Uploads per user | 3 per day (last 24 hours, deleted documents included) |
 | Document size | 200,000 characters |
 | Questions per user | 10 per minute, 50 per day |
 | Indexing jobs per user | 1 at a time |
@@ -461,13 +491,63 @@ Checked and already safe, now covered by tests: a `__proto__` key cannot grant a
 
 Notes that need no test now: validation `details` echo the names of unknown fields, so the frontend must show them as text, never as HTML; `/v1/health` has no rate limit (each call is one `SELECT 1` and one small Ollama request); passwords are not checked against a list of common passwords, which NIST recommends; a token keeps its role until it expires (1 hour), so demoting an admin takes effect after that; a token can outlive its account, which the documents layer answers with a 404 (see its section).
 
-## 14. Pending work
+## 14. Second review: security and architecture
 
-- **Next layer:** documents part B, the background queue: computing the embeddings with Ollama, progress events, and resuming after a restart.
-- **CORS:** `cors()` accepts every origin for now, which is safe while tokens travel in a header (no cookies). Restrict it to the frontend domain when the frontend is deployed.
+On 2026-10-17, before the questions layer, the project was reviewed again: for security problems, and for places that break the layered architecture or the SOLID principles. Security suspicions were probed against the real app; the architecture was checked by reading the code and with a script that lists the imports between layers (no layer imports one it should not). As in the first review, every fix has a test that fails without it, checked by removing the fix and running the test.
+
+Already fine: every query is parameterized and filtered by its owner, the domain code is pure, `npm audit` finds no vulnerabilities, and compressed "zip bomb" bodies are cut off with a 413 in milliseconds.
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| S1 | Uploading and deleting had no limit: 15 cycles of 180 KB in 1.2 seconds were all accepted, and each one is work for Ollama | 3 uploads per user per day | `documents.test.ts` |
+| S2 | A filename with a null byte caused a 500; text-direction characters allowed names that display differently from what they are | Rejected with a 400 | `documents.test.ts` |
+| S3 | No security headers: responses with tokens and documents could be cached on disk | `securityHeadersMiddleware` | `securityHeaders.test.ts` |
+| S4 | The decoded token was trusted through a cast | Payload checked at run time | `middlewares/auth.test.ts`, `token.test.ts` |
+| S6 | A form (`urlencoded`) parser in an API that only takes JSON | Removed | `securityHeaders.test.ts` |
+| A1 | `jobQueue.service.ts` did five things: events, claiming jobs, indexing, the retry policy and the timers | Split into three services | `jobQueue.test.ts`, unchanged |
+| A2 | Token logic in two places, each with its own secret read and its own `"HS256"` | `utils/token.util.ts` and `config/auth.config.ts` | `token.test.ts` |
+| A3 | `app.ts` knew the `/v1/documents` path, to skip the global body parser | Body parsers per route | `authRateLimit.test.ts`, `registerAttempts.test.ts` |
+| A4 | Six `req.decoded!` in controllers: a router mounted without authentication would crash into a 500 | `requireUserId(req)` | `requireUserId.test.ts` |
+| A5 | The queue decided to retry by looking at an HTTP status (503) | `ModelUnavailableError` | `jobQueue.test.ts` |
+| A7 | The list of user columns was duplicated in two services | Exported once from `users.service.ts` | existing auth tests |
+
+Deferred, and listed in [Pending work](#15-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
+
+> [!NOTE]
+> **Decision: 3 uploads per user per day.** The quotas did not stop a loop of upload and delete, because deleting frees the slot, and every upload makes Ollama work. Accepted uploads are recorded in their own table, `upload_usage` (migration `002`), because deleting a document deletes its row. The limit counts the last 24 hours (a rolling window, like the planned question quota), the cleanup removes older rows, and only accepted uploads count, so a rejected one costs nothing. Going over answers 429, because it is a rate over time; the document and indexing quotas stay 409 and are checked first. The review proposed 10 per hour with the in-memory rate limiter; a count in the database, with the same value as the document limit, was chosen instead: it survives restarts and `GET /v1/users/me` can show it (`usage.uploadsToday`). Configurable with `MAX_UPLOADS_PER_DAY`.
+
+> [!NOTE]
+> **Decision: filenames without control or text-direction characters.** The validator rejects control characters (a null byte made PostgreSQL fail, which became a 500) and the invisible marks that reverse the direction of text, which can make `invoice[U+202E]txt.exe` display as `invoiceexe.txt`. Accents, other scripts such as Hebrew, and emoji stay allowed. The regular expression is built from code point numbers, so no invisible character appears in the source.
+
+> [!NOTE]
+> **Decision: security headers without a new dependency.** Helmet would add a dependency for five headers. `securityHeadersMiddleware` runs first and sets them on every response, errors included: `Cache-Control: no-store` (responses with tokens and documents are not kept on shared computers), `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`. They suit an API that only returns private JSON.
+
+> [!NOTE]
+> **Decision: one module for tokens, with the payload checked.** `utils/token.util.ts` signs (`signToken`) and verifies (`verifyToken`); the algorithm and the secret come from `config/auth.config.ts`, so `"HS256"` and the secret read exist once. `verifyToken` checks that the id is a UUID and the role a known one, and returns only those two fields: a correctly signed token with another shape (from an older version, or signed by mistake with the same secret) gets the same 401 as a forged one.
+
+> [!NOTE]
+> **Decision: body parsers per route, JSON only.** There is no global body parser. Each route that takes a body adds `express.json()` itself: the auth routes after the per-address limits and before the per-email limit, which reads the email; uploads with their 2 MB limit, after authentication. `app.ts` no longer knows any route path, an address over its limit gets its 429 without its body being read, and the form parser is gone because the API only accepts JSON.
+
+> [!NOTE]
+> **Decision: the queue split in three.** `jobEvents.service.ts` is the observer; `indexing.service.ts` runs one job (embed the chunks, mark the document ready or failed, or put the job back in the queue); `jobQueue.service.ts` claims the jobs and runs them one at a time, polls, starts, stops and recovers at startup. The coming event stream only needs the events, and will depend on that file alone.
+
+> [!NOTE]
+> **Decision: `requireUserId(req)` instead of `req.decoded!`.** Controllers get the logged-in user's id through a helper that throws a 401 `AppError` when there is none. A router mounted by mistake outside the protected section then answers 401 instead of crashing into a 500.
+
+> [!NOTE]
+> **Decision: `ModelUnavailableError` for "try again later".** Ollama being unreachable is thrown as `ModelUnavailableError`, a subclass of `AppError` with status 503, and the queue puts a job back only for that type. Before, it did so for any `AppError` with status 503, which tied the background work to an HTTP code: a future 503 thrown for another reason would have been retried forever. HTTP clients still get the same 503.
+
+## 15. Pending work
+
+- **Next layer:** questions (`POST /v1/documents/:id/ask`, baseline and structured modes, the `language` parameter, the 10-per-minute and 50-per-day limits), then the event stream (`GET /v1/events`) with the `queued` event and live queue positions.
+- **Cold start (idea):** the first upload after Ollama starts waits for the model to load (about 55 seconds measured, with progress at 0). The API could send a tiny embedding request at startup to load the model in the background.
+- **Health rate limit (S5):** `/v1/health` is public and each call queries the database and Ollama. Add a per-address limit before the API is exposed to the internet.
+- **Graceful shutdown (S7):** on `SIGTERM` (for example `docker stop`), stop accepting requests, let the ones in progress finish, stop the worker and close the pool. Jobs already recover after an abrupt stop. Deployment step.
+- **Model provider interfaces (A6):** only if a second provider appears, such as the cloud model the brief mentions as an idea.
+- **CORS (S8):** `cors()` accepts every origin for now, which is safe while tokens travel in a header (no cookies). Restrict it to the frontend domain when the frontend is deployed.
 - **Health with the database down:** `checkDatabase` reports `down` when the query fails or the 5-second connection timeout passes, but no automated test covers that case yet.
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.
-- **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.
+- **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `upload_usage` and `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.
 - **Tiny last chunks (idea):** the last chunk of a document can be very short and match questions unreliably; merging it into the previous chunk when it is under about 200 characters would avoid that.
 - **Deployment (step 5 of the brief):** Dockerfile and compose hardening (non-root user, read-only filesystem, `cap_drop: ALL`, no published API port), two database users (an owner for migrations and a limited one for the API), Cloudflare Tunnel, Turnstile and the frontend.
 - **Evaluation:** measure the Spanish prompts and the adjusted citation rule once the question endpoint works.

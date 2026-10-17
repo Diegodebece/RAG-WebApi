@@ -123,7 +123,7 @@ describe("GET /v1/users/me", () => {
         assert.equal(response.status, 200);
         const { usage, ...account } = response.body.data;
         assert.deepEqual(account, body.data);
-        assert.deepEqual(usage, { documents: { used: 0, limit: 3 } });
+        assert.deepEqual(usage, { documents: { used: 0, limit: 3 }, uploadsToday: { used: 0, limit: 3 } });
     });
 
     it("requires a token", async () => {
