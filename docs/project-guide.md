@@ -11,9 +11,10 @@ Contents:
 5. [How RAG works here](#5-how-rag-works-here)
 6. [Domain layer](#6-domain-layer)
 7. [Database layer](#7-database-layer)
-8. [Local environment](#8-local-environment)
-9. [Agreed limits](#9-agreed-limits)
-10. [Pending work](#10-pending-work)
+8. [Middleware layer](#8-middleware-layer)
+9. [Local environment](#9-local-environment)
+10. [Agreed limits](#10-agreed-limits)
+11. [Pending work](#11-pending-work)
 
 ## 1. Origin and goal
 
@@ -294,9 +295,36 @@ npm test
 > [!NOTE]
 > **Decision: a separate test database with two safety guards.** Tests use `rag_test`, which they empty on every run. `test/setup.ts` points the app at `TEST_DATABASE_URL` and, if it is missing, removes the database URL instead of falling back to the development one. The reset helper also refuses to empty any database whose name does not end in `_test`.
 
-## 8. Local environment
+## 8. Middleware layer
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#10-pending-work)).
+Middlewares run before the controllers and handle what every route shares. They live in `src/v1/middlewares/`, copied from the layered-express templates, and are tested with `supertest` against small Express apps in `test/middlewares/`.
+
+| Middleware | What it does |
+|---|---|
+| `errorMiddleware` | The only place that writes error responses: an `AppError` becomes its status and `{ message }` (plus `details`), malformed JSON becomes a 400, and anything unexpected becomes a generic 500 whose real message is only logged |
+| `notFoundMiddleware` | Unknown routes answer 404 |
+| `validateBodyMiddleware(schema)` | Validates the body with Joi and passes the cleaned result as `req.validatedBody`; all problems are reported at once in `details` |
+| `authenticateMiddleware` | Reads the `Authorization: Bearer <token>` header, verifies the JWT with `SECRET_KEY` and puts its payload (`id`, `role`) in `req.decoded` |
+| `authorizeMiddleware(roles)` | 401 when there is no logged-in user, 403 when the user's role is not in the list |
+| `rateLimitMiddleware(options)` | Counts requests per client address or per email and answers 429 when a limit is passed |
+
+The limits come from `src/v1/config/limits.config.ts`, which reads them from `.env` with the agreed values as defaults and stops the app at startup if a value is not a positive integer.
+
+> [!NOTE]
+> **Decision: validate an empty object when there is no body.** Express 5 leaves `req.body` undefined for a request without a body, and Joi accepts undefined for an object schema, so such a request passed validation and reached the controller with no data. The template validated `req.body` directly; it now validates `req.body ?? {}`, which reports the missing required fields as a 400. Found by testing the template before using it, and fixed in the skill too.
+
+> [!NOTE]
+> **Decision: pin the JWT algorithm.** Tokens are verified with `algorithms: ["HS256"]`, so a token signed any other way, including the forged `alg: none` kind, is rejected even if the library's defaults change. Tests cover malformed, expired, foreign-secret, unsigned and other-algorithm tokens, which all get the same 401 message.
+
+> [!NOTE]
+> **Decision: rate limits as one configurable middleware, counted in memory.** `rateLimitMiddleware({ limit, windowMs, keyBy, onlyFailures })` wraps `express-rate-limit`, so each route builds the limit it needs. A 429 goes through `errorMiddleware` and has the usual `{ message }` body, and standard `RateLimit` headers tell the client its limit. Counters live in memory and reset on restart, which is acceptable for windows of minutes or an hour; the daily question quota is counted in the database instead.
+
+> [!NOTE]
+> **Decision: failed logins counted per email, not only per address.** An attacker can spread password guesses over many addresses, so failed logins are also counted per email (`onlyFailures: true`, successful logins do not count). The email is trimmed and lowercased, so `Ana@x.com` and `ana@x.com` share a counter.
+
+## 9. Local environment
+
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#11-pending-work)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -304,7 +332,7 @@ During development only PostgreSQL runs in Docker; the API runs on the host with
 > [!NOTE]
 > **Decision: user name `rag`.** A user name is not a secret, so a complex one adds little; access is protected by the network exposure and a long random password. The default `postgres` user is avoided because it is the first one bots try. The real hardening is two users in deployment (see below).
 
-## 9. Agreed limits
+## 10. Agreed limits
 
 These values will become `.env` settings when the endpoints that enforce them are built.
 
@@ -324,11 +352,12 @@ These values will become `.env` settings when the endpoints that enforce them ar
 > [!NOTE]
 > **Decision: stricter limits than the brief's examples.** Registration is limited to 3 per IP per hour (shared networks such as universities still work) and documents are deleted after 24 hours instead of 7 days. Behind Cloudflare the API must read the real client IP from `CF-Connecting-IP`, trusted only for requests that come through the tunnel; otherwise every request would look like the tunnel's and share one limit.
 
-## 10. Pending work
+## 11. Pending work
 
 - **Malformed ids:** an id that is not even a UUID (`/documents/abc`) makes PostgreSQL fail with code `22P02`, which would become a 500. To be solved in the route layer, probably as a 404.
 - **Next layer:** authentication (register, login, `GET /me`) with `crypto.scrypt`, JWT and the IP rate limits.
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.
+- **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.
 - **Tiny last chunks (idea):** the last chunk of a document can be very short and match questions unreliably; merging it into the previous chunk when it is under about 200 characters would avoid that.
 - **Deployment (step 5 of the brief):** Dockerfile and compose hardening (non-root user, read-only filesystem, `cap_drop: ALL`, no published API port), two database users (an owner for migrations and a limited one for the API), Cloudflare Tunnel, Turnstile and the frontend.
 - **Evaluation:** measure the Spanish prompts and the adjusted citation rule once the question endpoint works.

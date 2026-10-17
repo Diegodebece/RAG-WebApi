@@ -25,6 +25,10 @@ Core set, copy into every new project:
 - [templates/authenticate.middleware.ts](templates/authenticate.middleware.ts)
 - [templates/authorize.middleware.ts](templates/authorize.middleware.ts)
 
+When the project needs request limits:
+
+- [templates/rateLimit.middleware.ts](templates/rateLimit.middleware.ts) — `rateLimitMiddleware({ limit, windowMs, keyBy, onlyFailures })` on top of `express-rate-limit`
+
 ## 4. Rules
 
 - Plain middleware: `export const xMiddleware = (req: Request, res: Response, next: NextFunction) => { ... };`, with `import type { Request, Response, NextFunction } from "express";`.
@@ -37,6 +41,9 @@ Core set, copy into every new project:
 - Async middlewares wrap their body in `try/catch → next(error)`, same as controllers.
 - `errorMiddleware` keeps the 4-argument signature `(err: unknown, req: Request, res: Response, next: NextFunction)`, is registered last, logs unexpected errors and never leaks their message (generic 500). It narrows `err` with `instanceof AppError` or a type guard, never with `any`.
 - Required config read from `process.env` (e.g. `SECRET_KEY`) is checked before use; if it is missing, call `next(new Error("<NAME> is not set"))` so `errorMiddleware` answers 500. Do not cast it with `as string`.
+- `validateBodyMiddleware` validates `req.body ?? {}`: Express 5 leaves `req.body` undefined for a request without a body, and Joi accepts undefined for an object schema.
+- `authenticateMiddleware` verifies tokens with a pinned algorithm (`{ algorithms: ["HS256"] }`), so tokens signed any other way, including `alg: none`, are rejected.
+- Rate limits: build each limit with `rateLimitMiddleware({ ... })` in the router, with values read from a config module (never hardcoded). Its handler calls `next(new AppError(429, ...))`, so a 429 has the usual error body. Email-keyed limits read the raw body and must run after `express.json()`.
 
 ## 5. Checklist
 

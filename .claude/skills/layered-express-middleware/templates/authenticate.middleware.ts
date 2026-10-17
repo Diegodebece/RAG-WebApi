@@ -18,7 +18,8 @@ export const authenticateMiddleware = (req: Request, res: Response, next: NextFu
     }
 
     try {
-        req.decoded = jwt.verify(token, secretKey) as TokenPayload;
+        // only accept the algorithm our tokens are signed with
+        req.decoded = jwt.verify(token, secretKey, { algorithms: ["HS256"] }) as TokenPayload;
         next();
     } catch (error) {
         next(new AppError(401, "Invalid or expired authentication token"));
