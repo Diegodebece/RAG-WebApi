@@ -3,7 +3,7 @@
 ## Stack
 - Node.js with ES modules (`"type": "module"`), TypeScript (`strict`, `NodeNext`), Express 5, Joi for validation, JWT for auth.
 - Source lives in `src/` as `.ts` files and compiles to `dist/` with `tsc`; `tsx` runs the sources in development.
-- Data layer: not defined yet (next projects use SQL). Follow whatever the project already uses.
+- Data layer: PostgreSQL (with pgvector when needed) through `pg`. Plain parameterized SQL in the services, no ORM; schema changes are numbered SQL files in `migrations/`, applied with `npm run migrate`. Ids are UUID strings.
 
 ## Global rules
 - Everything in English: identifiers, file names, routes, response and error messages.
@@ -22,7 +22,7 @@
 - Error body: `{ message }`, plus `details` for validation errors. Only `errorMiddleware` writes error responses.
 
 ## Workflows — always load the matching skill before writing code
-- Creating a project, adding a new resource/entity, moving files, `tsconfig.json`, types → `layered-express-structure`
+- Creating a project, adding a new resource/entity, moving files, `tsconfig.json`, types, migrations, database config, test setup → `layered-express-structure`
 - Routers (`*.routes.ts`, `v1.routes.ts`) → `layered-express-route`
 - Controllers (`*.controller.ts`) → `layered-express-controller`
 - Services (`*.service.ts`) → `layered-express-service`
