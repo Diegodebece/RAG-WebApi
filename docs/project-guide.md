@@ -13,10 +13,11 @@ Contents:
 7. [Database layer](#7-database-layer)
 8. [Middleware layer](#8-middleware-layer)
 9. [Authentication layer](#9-authentication-layer)
-10. [Local environment](#10-local-environment)
-11. [Agreed limits](#11-agreed-limits)
-12. [Security review](#12-security-review)
-13. [Pending work](#13-pending-work)
+10. [Documents layer (part A)](#10-documents-layer-part-a-storage-and-jobs)
+11. [Local environment](#11-local-environment)
+12. [Agreed limits](#12-agreed-limits)
+13. [Security review](#13-security-review)
+14. [Pending work](#14-pending-work)
 
 ## 1. Origin and goal
 
@@ -322,7 +323,7 @@ The limits come from `src/v1/config/limits.config.ts`, which reads them from `.e
 > **Decision: rate limits as one configurable middleware, counted in memory.** `rateLimitMiddleware({ limit, windowMs, keyBy, onlyFailures })` wraps `express-rate-limit`, so each route builds the limit it needs. A 429 goes through `errorMiddleware` and has the usual `{ message }` body, and standard `RateLimit` headers tell the client its limit. Counters live in memory and reset on restart, which is acceptable for windows of minutes or an hour; the daily question quota is counted in the database instead.
 
 > [!NOTE]
-> **Decision: failed logins counted per email, not only per address.** An attacker can spread password guesses over many addresses, so failed logins are also counted per email (`onlyFailures: true`, successful logins do not count). The email is trimmed and lowercased, so `Ana@x.com` and `ana@x.com` share a counter.
+> **Decision: failed logins counted per email and address.** Besides the 10 logins per address, failed logins are counted per email *and* address (`keyBy: "emailAndIp"`, `onlyFailures: true`): one address cannot guess one account more than 5 times in 15 minutes, and someone failing on purpose with another person's email cannot lock that person out, because the owner logs in from a different address. The first version counted per email only, which allowed exactly that lockout; changed after the security review. The email is normalized like the validator does, so every spelling of one address shares a counter.
 
 > [!NOTE]
 > **Decision: errors after the response has started go to Express.** Once part of a response is out, as in a stream, another status cannot be sent. `errorMiddleware` checks `res.headersSent` and calls `next(err)`, so Express closes the connection; before, it tried to send a second response and threw. Found in the security review, before the first streaming endpoint.
@@ -371,9 +372,44 @@ Registering trims and lowercases the email, rejects one that is already taken (4
 > [!NOTE]
 > **Decision: refuse to start with a missing or weak `SECRET_KEY`.** A short or well-known secret lets anyone forge tokens by guessing it offline. `server.ts` exits with a clear message unless `SECRET_KEY` has at least 32 characters and is not the `change-me` placeholder. Registration also reads the secret before creating the account, so a misconfiguration no longer leaves a created account behind a 500 error.
 
-## 10. Local environment
+## 10. Documents layer (part A: storage and jobs)
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#13-pending-work)).
+Uploading stores a document and queues its indexing; computing the embeddings with Ollama is part B. All routes are protected and only ever touch the caller's own rows.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /v1/documents` | `{ filename, text }` → cleans and chunks the text, stores the document, its chunks without embeddings and an indexing job in one transaction, and answers `202` with the document and the `jobId` |
+| `GET /v1/documents` | The caller's documents, newest first, each with `status`, `chunkCount` and `expiresAt` |
+| `GET /v1/documents/:id` | One of the caller's documents |
+| `DELETE /v1/documents/:id` | Deletes it; its chunks and jobs go with it |
+| `GET /v1/jobs/:id` | The job's status and its position in the queue, for polling until indexing finishes |
+
+An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` now reports `usage.documents` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours and question records older than the daily quota window.
+
+> [!NOTE]
+> **Decision: 202 Accepted for uploads.** The skills answer creations with 201, but an uploaded document cannot be used until its embeddings exist; 202 says exactly that, and the brief specified it. The client polls `GET /v1/jobs/:id` (and later listens to the event stream) to know when it is ready.
+
+> [!NOTE]
+> **Decision: 503 and 504 allowed in `AppError`, for those cases only.** The skills kept every 5xx for unexpected errors. A full queue (and, in part B, Ollama being down or too slow) is expected and temporary, and the brief maps it to 503 and 504 so the frontend can say "try again later". The service skill now allows exactly those two codes; any other 5xx still bubbles up as a generic 500.
+
+> [!NOTE]
+> **Decision: quotas answered with 409.** A user with 3 documents, or with a document still being indexed, gets 409: the request is fine but conflicts with the account's current state. 429 stays for request rates, 403 for roles.
+
+> [!NOTE]
+> **Decision: lock the user's row during an upload.** The upload transaction starts with `SELECT ... FROM users ... FOR UPDATE`, so two uploads from one user run one after the other and cannot both pass the quota checks. The light lock PostgreSQL takes for the `documents.user_id` foreign key does not prevent that race, because those locks do not conflict with each other. A test holds a conflicting lock by hand and checks that an upload waits; without the service's lock that test fails. The same query detects a token whose account was deleted and answers 404 instead of a foreign-key error.
+
+> [!NOTE]
+> **Decision: larger bodies only for uploads, read after authentication.** A 200,000-character document (about 60 Word pages) can take more than 1 MB as JSON. The upload route parses its own body with a 2 MB limit after `authenticateMiddleware`; every other route keeps the 100 KB default. A first version raised the limit in `app.ts`, which made the server read up to 2 MB from anonymous requests before rejecting them; a test now sends 2.5 MB without a token and fails if the answer is 413 (body read) instead of 401.
+
+> [!NOTE]
+> **Decision: malformed ids answer 404.** Services check ids from the URL with `isUuid` before querying, so `/documents/abc` gets the same 404 as an unknown or another user's document, instead of PostgreSQL's `22P02` error becoming a 500.
+
+> [!NOTE]
+> **Decision: chunks inserted in one statement.** All chunks of a document go in with one `INSERT ... SELECT ... FROM unnest($2::text[]) WITH ORDINALITY`, which numbers them in text order, instead of one query per chunk.
+
+## 11. Local environment
+
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#14-pending-work)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -381,7 +417,7 @@ During development only PostgreSQL runs in Docker; the API runs on the host with
 > [!NOTE]
 > **Decision: user name `rag`.** A user name is not a secret, so a complex one adds little; access is protected by the network exposure and a long random password. The default `postgres` user is avoided because it is the first one bots try. The real hardening is two users in deployment (see below).
 
-## 11. Agreed limits
+## 12. Agreed limits
 
 These values will become `.env` settings when the endpoints that enforce them are built.
 
@@ -401,7 +437,7 @@ These values will become `.env` settings when the endpoints that enforce them ar
 > [!NOTE]
 > **Decision: stricter limits than the brief's examples.** Registration is limited to 3 per IP per hour (shared networks such as universities still work) and documents are deleted after 24 hours instead of 7 days. Behind Cloudflare the API must read the real client IP from `CF-Connecting-IP`, trusted only for requests that come through the tunnel; otherwise every request would look like the tunnel's and share one limit.
 
-## 12. Security review
+## 13. Security review
 
 On 2026-10-17 the whole project was reviewed for bugs and vulnerabilities. Every suspicion was first probed against the real app on the test database; each confirmed problem got a test that fails on the old code and passes with the fix (checked by running the new tests with the fixes stashed).
 
@@ -413,23 +449,21 @@ On 2026-10-17 the whole project was reviewed for bugs and vulnerabilities. Every
 | A missing `SECRET_KEY` created the account and then failed; a weak one was accepted | Fixed: startup check, secret read first | `env.test.ts`, `authSecurity.test.ts` |
 | `errorMiddleware` threw when the response had already started | Fixed: delegates to Express | `error.test.ts` |
 | The GitHub hook missed full paths to `gh.exe` / `git.exe` and git aliases | Fixed | `denyGithub.test.ts` |
-| Anyone can lock an account for 15 minutes with failed logins on its email | **Open decision** | `rateLimit.test.ts` (todo) |
+| Anyone could lock an account for 15 minutes with failed logins on its email | Fixed afterwards: failed logins counted per email and address (option 1 below) | `rateLimit.test.ts` |
 
 Checked and already safe, now covered by tests: a `__proto__` key cannot grant a role; null bytes and 90,000-character emails get a 400, not a database error or a slow response; bodies over 100 KB get a 413; non-object and form-array bodies get a 400; two simultaneous registrations of one email create one account; a spoofed `X-Forwarded-For` header does not reset a limit; the health check reports a dead database in time instead of hanging; the citation and chunking code handle 200,000 hostile characters in milliseconds (no ReDoS).
 
-**The open decision: account lockout.** Failed logins are counted per email (5 per 15 minutes), which stops password guessing spread over many addresses but lets anyone block a victim by failing on purpose. Options:
+**Account lockout, decided after the review.** Failed logins were counted per email only (5 per 15 minutes), which stopped password guessing spread over many addresses but let anyone block a victim by failing on purpose. The options were (option 1 was chosen):
 
 1. Count failed logins per email *and* address: an attacker can no longer lock out the owner, who logs in from another address; guessing spread over many addresses gets 5 tries per address, still capped by the 10 logins per address.
 2. Keep per-email counting and add a challenge (Turnstile) after a few failures instead of blocking, once the frontend exists.
 3. Keep it as it is and accept the risk for the proof of concept.
 
-Notes that need no test now: validation `details` echo the names of unknown fields, so the frontend must show them as text, never as HTML; `/v1/health` has no rate limit (each call is one `SELECT 1` and one small Ollama request); passwords are not checked against a list of common passwords, which NIST recommends; a token keeps its role until it expires (1 hour), so demoting an admin takes effect after that; a token can outlive its account, and future inserts with that user id would fail the foreign key (`23503`), which the documents layer must answer with a 4xx.
+Notes that need no test now: validation `details` echo the names of unknown fields, so the frontend must show them as text, never as HTML; `/v1/health` has no rate limit (each call is one `SELECT 1` and one small Ollama request); passwords are not checked against a list of common passwords, which NIST recommends; a token keeps its role until it expires (1 hour), so demoting an admin takes effect after that; a token can outlive its account, which the documents layer answers with a 404 (see its section).
 
-## 13. Pending work
+## 14. Pending work
 
-- **Malformed ids:** an id that is not even a UUID (`/documents/abc`) makes PostgreSQL fail with code `22P02`, which would become a 500. To be solved in the route layer, probably as a 404.
-- **Next layer:** documents (upload, list, delete) with the persisted indexing queue.
-- **Account lockout:** choose an option from the [security review](#12-security-review) and turn its todo test into a normal one.
+- **Next layer:** documents part B, the background queue: computing the embeddings with Ollama, progress events, and resuming after a restart.
 - **CORS:** `cors()` accepts every origin for now, which is safe while tokens travel in a header (no cookies). Restrict it to the frontend domain when the frontend is deployed.
 - **Health with the database down:** `checkDatabase` reports `down` when the query fails or the 5-second connection timeout passes, but no automated test covers that case yet.
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.

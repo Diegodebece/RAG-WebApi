@@ -1,5 +1,7 @@
 import { app } from "./app.js";
 import { getStartupConfigProblems } from "./v1/config/env.config.js";
+import { CLEANUP_INTERVAL_MS } from "./v1/config/limits.config.js";
+import { deleteExpiredDataService } from "./v1/services/cleanup.service.js";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -13,6 +15,21 @@ if (problems.length > 0) {
     process.exit(1);
 }
 
+// Deletes expired documents and old question records; a failure is logged and retried on the next run.
+const runCleanup = async (): Promise<void> => {
+    try {
+        const removed = await deleteExpiredDataService();
+
+        if (removed.documents > 0 || removed.questionUsage > 0) {
+            console.log(`Cleanup: ${removed.documents} expired document(s), ${removed.questionUsage} old question record(s)`);
+        }
+    } catch (error) {
+        console.error("Cleanup failed", error);
+    }
+};
+
 app.listen(PORT, HOST, () => {
     console.log(`Server running on http://${HOST}:${PORT}`);
+    void runCleanup();
+    setInterval(() => void runCleanup(), CLEANUP_INTERVAL_MS);
 });

@@ -2,7 +2,7 @@
 
 Self-hosted RAG API: upload a document, ask questions about it, get answers that cite the passages they come from. Built with Express and TypeScript, PostgreSQL with pgvector, Docker, and local Ollama models, so it runs for free on one laptop.
 
-> **Status:** work in progress. Accounts (register, login, current user) and the health check work; documents, indexing and questions are next. See [docs/project-guide.md](docs/project-guide.md) for how everything works and why it was built this way.
+> **Status:** work in progress. Accounts, the health check and document storage work (upload, list, delete, job status); computing the embeddings in the background and asking questions are next. See [docs/project-guide.md](docs/project-guide.md) for how everything works and why it was built this way.
 
 It turns the command-line app from [RAG-learning](https://github.com/Diegodebece/RAG-learning) (RAG1) into a web service, reusing its retrieval and answer pipelines and the settings measured in its evaluation.
 
@@ -64,7 +64,12 @@ All paths start with `/v1`. Protected endpoints need the header `Authorization: 
 | `GET /health` | Public | `status` is `ok`, `degraded` (Ollama down) or `down` (database down) |
 | `POST /auth/register` | Public | Creates an account from `{ email, password }` and returns it with a token |
 | `POST /auth/login` | Public | Returns the account and a token valid for 1 hour |
-| `GET /users/me` | Protected | Returns the account of the token's owner |
+| `GET /users/me` | Protected | Returns the account of the token's owner and its document usage |
+| `POST /documents` | Protected | Stores `{ filename, text }` (up to 200,000 characters) and queues its indexing; answers `202` with the document and a `jobId` |
+| `GET /documents` | Protected | Lists your documents, newest first |
+| `GET /documents/:id` | Protected | Returns one of your documents |
+| `DELETE /documents/:id` | Protected | Deletes one of your documents |
+| `GET /jobs/:id` | Protected | Returns a job's status and its position in the queue |
 
 Successful responses look like `{ success: true, message, data }`; errors look like `{ message }`, with `details` for validation errors.
 

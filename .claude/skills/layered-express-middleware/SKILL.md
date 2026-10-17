@@ -44,7 +44,7 @@ When the project needs request limits:
 - Required config read from `process.env` (e.g. `SECRET_KEY`) is checked before use; if it is missing, call `next(new Error("<NAME> is not set"))` so `errorMiddleware` answers 500. Do not cast it with `as string`.
 - `validateBodyMiddleware` validates `req.body ?? {}`: Express 5 leaves `req.body` undefined for a request without a body, and Joi accepts undefined for an object schema.
 - `authenticateMiddleware` verifies tokens with a pinned algorithm (`{ algorithms: ["HS256"] }`), so tokens signed any other way, including `alg: none`, are rejected.
-- Rate limits: build each limit with `rateLimitMiddleware({ ... })` in the router, with values read from a config module (never hardcoded). Its handler calls `next(new AppError(429, ...))`, so a 429 has the usual error body. Email-keyed limits read the raw body and must run after `express.json()`. `onlyFailures` counts only error responses (failed logins); `onlySuccesses` counts only successful ones (accounts created), so typos do not use up a limit.
+- Rate limits: build each limit with `rateLimitMiddleware({ ... })` in the router, with values read from a config module (never hardcoded). Its handler calls `next(new AppError(429, ...))`, so a 429 has the usual error body. Limits keyed by email (`keyBy: "emailAndIp"`, one counter per email and address, so nobody can lock another person out) read the raw body and must run after `express.json()`. `onlyFailures` counts only error responses (failed logins); `onlySuccesses` counts only successful ones (accounts created), so typos do not use up a limit.
 
 ## 5. Checklist
 
