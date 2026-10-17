@@ -2,7 +2,7 @@ import { app } from "./app.js";
 import { getStartupConfigProblems } from "./v1/config/env.config.js";
 import { CLEANUP_INTERVAL_MS } from "./v1/config/limits.config.js";
 import { deleteExpiredDataService } from "./v1/services/cleanup.service.js";
-import { subscribeToJobEvents } from "./v1/services/jobEvents.service.js";
+import { subscribeToEvents } from "./v1/services/events.service.js";
 import { recoverJobsService, startJobWorkerService } from "./v1/services/jobQueue.service.js";
 import { runWithModelTurnService } from "./v1/services/modelTurn.service.js";
 import { loadModelsService } from "./v1/services/ollama.service.js";
@@ -34,7 +34,7 @@ const runCleanup = async (): Promise<void> => {
 };
 
 // one observer of the job queue: the log (the SSE stream will be another)
-subscribeToJobEvents((event) => {
+subscribeToEvents((event) => {
     if (event.type === "done") {
         console.log(`Job ${event.jobId}: document ${event.documentId} indexed`);
     } else if (event.type === "failed") {

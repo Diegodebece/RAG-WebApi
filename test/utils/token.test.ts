@@ -20,8 +20,17 @@ describe("signToken", () => {
 });
 
 describe("verifyToken", () => {
-    it("returns the payload of a token made by signToken", () => {
-        assert.deepEqual(verifyToken(signToken(payload, SECRET), SECRET), payload);
+    it("returns the payload of a token made by signToken, with its expiry", () => {
+        const before = Date.now();
+        const decoded = verifyToken(signToken(payload, SECRET), SECRET);
+
+        assert.deepEqual({ id: decoded?.id, role: decoded?.role }, payload);
+        const lifetimeMs = (decoded?.expiresAt ?? 0) - before;
+        assert.ok(Math.abs(lifetimeMs - TOKEN_LIFETIME_SECONDS * 1000) < 2000, `expires in ${lifetimeMs} ms`);
+    });
+
+    it("returns null for a token without an expiry", () => {
+        assert.equal(verifyToken(jwt.sign(payload, SECRET), SECRET), null);
     });
 
     it("returns null for a token signed with another secret", () => {

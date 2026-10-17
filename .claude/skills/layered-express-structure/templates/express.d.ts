@@ -1,9 +1,9 @@
-import type { TokenPayload } from "./auth.type.js";
+import type { DecodedToken } from "./auth.type.js";
 
 declare global {
     namespace Express {
         interface Request {
-            decoded?: TokenPayload;
+            decoded?: DecodedToken;
             validatedBody?: unknown;
         }
     }

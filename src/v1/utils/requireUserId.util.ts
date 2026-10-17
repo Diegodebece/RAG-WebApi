@@ -10,3 +10,12 @@ export const requireUserId = (req: Pick<Request, "decoded">): string => {
 
     return req.decoded.id;
 };
+
+// When the logged-in user's token expires (milliseconds since 1970), with the same 401 when there is none.
+export const requireTokenExpiry = (req: Pick<Request, "decoded">): number => {
+    if (!req.decoded) {
+        throw new AppError(401, "Authentication required");
+    }
+
+    return req.decoded.expiresAt;
+};

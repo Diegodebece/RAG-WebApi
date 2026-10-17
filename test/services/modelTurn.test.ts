@@ -100,7 +100,29 @@ describe("runWithModelTurnService", () => {
         await assert.rejects(runWithModelTurnService(async () => {}, { signal: cancelled.signal }), (error: unknown) => error instanceof RequestCancelledError);
     });
 
-    it("is free again once the line is empty", async () => {
+    it("tells each waiting caller its place when it joins and every time it moves up", async () => {
+        const holder = heldTask();
+        const holding = runWithModelTurnService(holder.task);
+        const positions: Record<string, number[]> = { a: [], b: [], c: [] };
+        const cancelled = new AbortController();
+
+        const runs = ["a", "b", "c"].map((name) => runWithModelTurnService(async () => {}, {
+            onPosition: (position) => positions[name].push(position),
+            ...(name === "a" ? { signal: cancelled.signal } : {})
+        }).catch(() => "left"));
+
+        await nextTick();
+        // a leaves the line: b and c move up without waiting for a turn
+        cancelled.abort();
+        await nextTick();
+        holder.release();
+        await holding;
+        await Promise.all(runs);
+
+        assert.deepEqual(positions, { a: [1], b: [2, 1], c: [3, 2, 1] });
+    });
+
+        it("is free again once the line is empty", async () => {
         assert.equal(await runWithModelTurnService(async () => "free"), "free");
         assert.equal(getModelTurnWaitingCount(), 0);
     });

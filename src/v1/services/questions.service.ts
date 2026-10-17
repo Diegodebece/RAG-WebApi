@@ -12,6 +12,7 @@ import { extractCitationIds } from "../utils/citations.util.js";
 import { buildAnswerMessages, INSUFFICIENT_EVIDENCE_ANSWERS } from "../utils/prompts.util.js";
 import { interpretStructuredAnswer } from "../utils/structuredAnswer.util.js";
 import { isUuid } from "../utils/uuid.util.js";
+import { emitEvent } from "./events.service.js";
 import { getModelTurnWaitingCount, runWithModelTurnService } from "./modelTurn.service.js";
 import { chatService, embedTextsService } from "./ollama.service.js";
 import { findFragmentsService } from "./retrieval.service.js";
@@ -144,6 +145,7 @@ export const askQuestionService = async (
 
         return await runWithModelTurnService(async () => {
             const waitMs = elapsedSince(queued);
+            emitEvent({ type: "question_started", userId });
 
             const embeddingStarted = performance.now();
             const [questionVector] = await embedTextsService([questionData.question]);
@@ -181,7 +183,12 @@ export const askQuestionService = async (
                 sources: toSources(fragments),
                 timings: { waitMs, embeddingMs, retrievalMs, answerMs, totalMs: elapsedSince(started) }
             };
-        }, { maxWaitMs: MAX_QUESTION_WAIT_SECONDS * 1000, signal });
+        }, {
+            maxWaitMs: MAX_QUESTION_WAIT_SECONDS * 1000,
+            signal,
+            // the user's event streams show the question's place in line while it waits
+            onPosition: (position) => emitEvent({ type: "question_queued", userId, position })
+        });
     } finally {
         usersWithPendingQuestion.delete(userId);
     }

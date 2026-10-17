@@ -1,7 +1,7 @@
 import { pool } from "../config/db.config.js";
 import { AppError } from "../utils/appError.util.js";
 import { ModelUnavailableError } from "../utils/modelUnavailableError.util.js";
-import { emitJobEvent } from "./jobEvents.service.js";
+import { emitEvent } from "./events.service.js";
 import { runWithModelTurnService } from "./modelTurn.service.js";
 import { embedTextsService } from "./ollama.service.js";
 import type { ClaimedJob } from "../types/jobs.type.js";
@@ -55,14 +55,14 @@ const embedDocument = async (job: ClaimedJob): Promise<boolean> => {
             "SELECT count(*)::int AS count FROM chunks WHERE document_id = $1 AND embedding IS NULL",
             [job.documentId]
         );
-        emitJobEvent({ type: "progress", jobId: job.id, userId: job.userId, done: total - remaining.count, total });
+        emitEvent({ type: "progress", jobId: job.id, userId: job.userId, done: total - remaining.count, total });
     }
 };
 
 // Runs one indexing job the queue has claimed. "requeued" means the model server was unreachable and the
 // job went back to the queue, so the queue should stop until its next round.
 export const runIndexingJobService = async (job: ClaimedJob): Promise<"done" | "requeued"> => {
-    emitJobEvent({ type: "started", jobId: job.id, userId: job.userId });
+    emitEvent({ type: "started", jobId: job.id, userId: job.userId });
 
     try {
         const stillExists = await embedDocument(job);
@@ -76,7 +76,7 @@ export const runIndexingJobService = async (job: ClaimedJob): Promise<"done" | "
         }
 
         await pool.query("UPDATE jobs SET status = 'done', finished_at = now() WHERE id = $1", [job.id]);
-        emitJobEvent({ type: "done", jobId: job.id, userId: job.userId, documentId: job.documentId });
+        emitEvent({ type: "done", jobId: job.id, userId: job.userId, documentId: job.documentId });
         return "done";
     } catch (error) {
         // Ollama is not running (common right after the laptop starts): the job waits for the next round,
@@ -96,7 +96,7 @@ export const runIndexingJobService = async (job: ClaimedJob): Promise<"done" | "
 
         await pool.query("UPDATE jobs SET status = 'failed', error = $2, finished_at = now() WHERE id = $1", [job.id, message]);
         await pool.query("UPDATE documents SET status = 'failed' WHERE id = $1", [job.documentId]);
-        emitJobEvent({ type: "failed", jobId: job.id, userId: job.userId, error: message });
+        emitEvent({ type: "failed", jobId: job.id, userId: job.userId, error: message });
         return "done";
     }
 };

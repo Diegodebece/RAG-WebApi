@@ -24,7 +24,7 @@ export interface ClaimedJob {
     documentId: string;
 }
 
-// events the job queue sends to its observers (database, log, SSE stream)
+// events about an indexing job, sent to the log and to the owner's event streams
 export type JobEvent =
     | { type: "queued"; jobId: string; userId: string; position: number }
     | { type: "started"; jobId: string; userId: string }
