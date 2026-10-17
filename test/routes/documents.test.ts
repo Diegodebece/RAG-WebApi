@@ -359,6 +359,6 @@ describe("reading and deleting documents", () => {
 
         const response = await request(app).get("/v1/users/me").set(...ana.auth);
 
-        assert.deepEqual(response.body.data.usage, { documents: { used: 1, limit: 3 }, uploadsToday: { used: 2, limit: 3 } });
+        assert.deepEqual(response.body.data.usage, { documents: { used: 1, limit: 3 }, uploadsToday: { used: 2, limit: 3 }, questionsToday: { used: 0, limit: 30 } });
     });
 });

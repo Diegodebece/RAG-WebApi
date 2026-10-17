@@ -2,6 +2,7 @@ import { pool } from "../config/db.config.js";
 import { AppError } from "../utils/appError.util.js";
 import { ModelUnavailableError } from "../utils/modelUnavailableError.util.js";
 import { emitJobEvent } from "./jobEvents.service.js";
+import { runWithModelTurnService } from "./modelTurn.service.js";
 import { embedTextsService } from "./ollama.service.js";
 import type { ClaimedJob } from "../types/jobs.type.js";
 
@@ -35,7 +36,8 @@ const embedDocument = async (job: ClaimedJob): Promise<boolean> => {
             return true;
         }
 
-        const embeddings = await embedTextsService(chunks.map((chunk) => chunk.text));
+        // one turn with the model per batch, so a question waits for at most one batch, not the whole document
+        const embeddings = await runWithModelTurnService(() => embedTextsService(chunks.map((chunk) => chunk.text)));
 
         // one UPDATE per batch; pgvector reads each vector from its JSON-like text form
         const { rowCount } = await pool.query(

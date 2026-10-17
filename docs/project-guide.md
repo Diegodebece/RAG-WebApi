@@ -14,11 +14,12 @@ Contents:
 8. [Middleware layer](#8-middleware-layer)
 9. [Authentication layer](#9-authentication-layer)
 10. [Documents layer](#10-documents-layer)
-11. [Local environment](#11-local-environment)
-12. [Agreed limits](#12-agreed-limits)
-13. [Security review](#13-security-review)
-14. [Second review: security and architecture](#14-second-review-security-and-architecture)
-15. [Pending work](#15-pending-work)
+11. [Questions layer](#11-questions-layer)
+12. [Local environment](#12-local-environment)
+13. [Agreed limits](#13-agreed-limits)
+14. [Security review](#14-security-review)
+15. [Second review: security and architecture](#15-second-review-security-and-architecture)
+16. [Pending work](#16-pending-work)
 
 ## 1. Origin and goal
 
@@ -390,7 +391,7 @@ Uploading stores a document and queues its indexing; computing the embeddings is
 | `DELETE /v1/documents/:id` | Deletes it; its chunks and jobs go with it |
 | `GET /v1/jobs/:id` | The job's status and its position in the queue, for polling until indexing finishes |
 
-An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), when they already uploaded 3 documents in the last 24 hours, deleted ones included (429, see [section 14](#14-second-review-security-and-architecture)), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` reports `usage.documents` and `usage.uploadsToday` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours, and upload and question records older than the daily window.
+An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), when they already uploaded 3 documents in the last 24 hours, deleted ones included (429, see [section 15](#15-second-review-security-and-architecture)), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` reports `usage.documents` and `usage.uploadsToday` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours, and upload and question records older than the daily window.
 
 > [!NOTE]
 > **Decision: 202 Accepted for uploads.** The skills answer creations with 201, but an uploaded document cannot be used until its embeddings exist; 202 says exactly that, and the brief specified it. The client polls `GET /v1/jobs/:id` (and later listens to the event stream) to know when it is ready.
@@ -436,9 +437,56 @@ Measured with the real models on the laptop (RTX 4070): 10 chunks of about 1,000
 > [!NOTE]
 > **Decision: `FOR UPDATE SKIP LOCKED` when taking a job.** With a single worker it changes nothing, but it is the standard way to keep two workers from taking the same job, so the queue stays correct if the API ever runs twice. Two calls to start the queue at the same moment also share one run, which a test checks (every chunk embedded exactly once, the oldest job first).
 
-## 11. Local environment
+## 11. Questions layer
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#15-pending-work)).
+`POST /v1/documents/:id/ask` answers a question about one of the caller's documents within the request: the answer comes in the response, usually about a second later.
+
+| | |
+|---|---|
+| Body | `{ question, mode?, language? }`: a question of 1 to 1,000 characters, `mode` `baseline` (default) or `structured`, `language` `en` (default) or `es` |
+| `status` | `answered`, `insufficient_evidence` (the model said it cannot answer) or `no_match` (no chunk was close enough, the model was not asked) |
+| `answer` | The answer text; with `insufficient_evidence` and `no_match`, the fallback sentence in the requested language |
+| `citations` | The ids the answer cites, such as `["F1", "F3"]`, only for fragments really sent to the model |
+| `sources` | Every fragment the model saw: `id`, `chunkNumber` (1-based), `text`, `retrieval` (`match` or `neighbor`) and `score` for matches |
+| `timings` | Milliseconds waiting for the model (`waitMs`), embedding the question, searching, answering, and in total |
+| Errors | 400 invalid body, 404 another user's, unknown or malformed document, 409 document not ready or another question still waiting, 429 per-minute or daily limit, 503 Ollama down or server busy, 504 Ollama too slow |
+
+The steps, in `questions.service.ts`: check that the document belongs to the caller and is `ready`; count the question for the daily limit; wait for the turn with the model; embed the question; find the fragments (`retrieval.service.ts`: the 3 closest chunks with a similarity of at least 0.30, plus their neighbors, with one pgvector query and no index); build the prompt with the domain functions; ask the model (`chatService` in `ollama.service.ts`); and turn its reply into the status and the citations.
+
+Measured with the real models on the laptop: once both models are loaded, a question takes about a second (embedding about 30 ms, search under 10 ms, answer 0.3 to 1.2 seconds). The first question after Ollama starts took 88 seconds, 76 of them loading `qwen3.5:4b`. Both models fit in the GPU at the same time (4.6 of 8 GB), so indexing and questions do not unload each other.
+
+Two observations from that run, not yet decisions: a Spanish question about an English document found no chunk above 0.30, because the scores between languages are lower, so questions should be asked in the document's language (`language` only sets the language of the answer); and baseline mode once answered "the phone number is not provided" instead of the exact fallback sentence, which is reported as `answered`, the known weakness of that mode that structured mode avoids.
+
+> [!NOTE]
+> **Decision: answered within the request, waiting in a line in memory.** The brief says questions go through the same queue as indexing but are answered within the request. Three ways were weighed: a question job in the `jobs` table that the request waits for; a `202` with the job id and the position, then polling `GET /v1/jobs/:id` for the answer; or the request waits in a line in memory. The last one was chosen: it is the simplest, and normally a question waits only seconds. Its one limit, that the client cannot see its position while it waits, is solved by the event stream: the coming `queued` events will tell the browser its position. Questions are not stored in `jobs` (after a restart the request is gone, so there is nothing to resume), and the `answer_question` job type stays unused.
+
+> [!NOTE]
+> **Decision: one turn with the model for the whole API.** Every Ollama request goes through `modelTurn.service.ts`, first come first served: indexing takes a turn per batch of 10 chunks, a question one turn for its whole answer. A question therefore waits for at most one batch (about 200 ms) instead of a whole document, and Ollama never gets two requests at once. A test indexes a document while a question arrives and checks both: the question is answered before the last batch, and Ollama never has two requests at the same time.
+
+> [!NOTE]
+> **Decision: at most 60 seconds in line, 20 questions waiting, one per user.** A question whose turn has not come after 60 seconds (`MAX_QUESTION_WAIT_SECONDS`) leaves the line with a 503, which keeps the request well under the 100 seconds after which Cloudflare cuts a response. With 20 questions already waiting (`MAX_WAITING_QUESTIONS`) a new one gets the 503 at once, before it is counted. Each user can have one question waiting or being answered (409 for a second one), so nobody fills the line alone.
+
+> [!NOTE]
+> **Decision: a closed browser drops its question.** The controller turns the connection closing before the response into an `AbortSignal`: a question still in line leaves it, and one being answered aborts its Ollama request, which stops the generation. The model never works for nobody.
+
+> [!NOTE]
+> **Decision: 10 questions per minute and 30 per day, counted when accepted.** The per-minute limit is counted in memory per user (`rateLimitMiddleware` with the new `keyBy: "user"`), for every request. The daily limit was lowered from the brief's 50 to 30, counted in `question_usage` over the last 24 hours, like uploads; going over answers 429. A question counts when it is accepted, before the model is asked, and is not given back if the answer fails later: simple, and safe when two requests arrive together, because the user's row is locked while counting. Rejected questions (invalid, not found, not ready, busy) are not counted.
+
+> [!NOTE]
+> **Decision: a broken structured reply means "not enough evidence".** In structured mode the model must return `{"answerable": ..., "answer": ...}` with citations of fragments it received. When the reply breaks that contract (no citation, an invented one, an empty answer, or no JSON), the API answers `insufficient_evidence` with the fallback sentence instead of an error: an answer that cannot be checked should not be shown. Only the reason is logged, never the reply, which may quote the user's document.
+
+> [!NOTE]
+> **Decision: the model is asked exactly as in RAG1's evaluation.** `temperature: 0`, `seed: 42`, `num_ctx: 8192`, thinking off, the same prompts, and `format: "json"` in structured mode. The whole reply comes at once; showing it while it is generated can come with the event stream.
+
+> [!NOTE]
+> **Decision: the search also filters by owner.** The service already checks that the document belongs to the caller, and the pgvector query joins `documents` to filter by the user again. It is a second line of defense, tested on its own, in case the search is ever called from another place.
+
+> [!NOTE]
+> **Decision: the API loads both models when it starts.** The slow first load happens right after the laptop boots, and the API will start then too (in Docker, see Pending work). On start, `server.ts` sends Ollama a tiny embedding and an empty chat request, which loads the answer model without generating anything and with the same options as real requests, so it is not loaded twice. It takes the turn with the model like any request, before the worker resumes interrupted jobs. If Ollama is not running yet, the first request loads the models as before. Measured: with nothing loaded, the API had both models ready 8 seconds after starting. Baseline stays the default mode, as in the brief; the frontend will describe both modes (structured abstains more, baseline answers more).
+
+## 12. Local environment
+
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#16-pending-work)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -446,9 +494,9 @@ During development only PostgreSQL runs in Docker; the API runs on the host with
 > [!NOTE]
 > **Decision: user name `rag`.** A user name is not a secret, so a complex one adds little; access is protected by the network exposure and a long random password. The default `postgres` user is avoided because it is the first one bots try. The real hardening is two users in deployment (see below).
 
-## 12. Agreed limits
+## 13. Agreed limits
 
-The enforced values can be changed in `.env` (see `.env.example`); the question limits arrive with their layer.
+The enforced values can be changed in `.env` (see `.env.example`).
 
 | Limit | Value |
 |---|---|
@@ -458,7 +506,9 @@ The enforced values can be changed in `.env` (see `.env.example`); the question 
 | Documents per user | 3 |
 | Uploads per user | 3 per day (last 24 hours, deleted documents included) |
 | Document size | 200,000 characters |
-| Questions per user | 10 per minute, 50 per day |
+| Questions per user | 10 per minute, 30 per day, 1 at a time |
+| Question length | 1,000 characters |
+| Waiting for the model | 60 seconds at most, 20 questions waiting |
 | Indexing jobs per user | 1 at a time |
 | Job queue length | 20 |
 | Document lifetime | 24 hours |
@@ -467,7 +517,7 @@ The enforced values can be changed in `.env` (see `.env.example`); the question 
 > [!NOTE]
 > **Decision: stricter limits than the brief's examples.** Registration is limited to 3 per IP per hour (shared networks such as universities still work) and documents are deleted after 24 hours instead of 7 days. Behind Cloudflare the API must read the real client IP from `CF-Connecting-IP`, trusted only for requests that come through the tunnel; otherwise every request would look like the tunnel's and share one limit.
 
-## 13. Security review
+## 14. Security review
 
 On 2026-10-17 the whole project was reviewed for bugs and vulnerabilities. Every suspicion was first probed against the real app on the test database; each confirmed problem got a test that fails on the old code and passes with the fix (checked by running the new tests with the fixes stashed).
 
@@ -491,7 +541,7 @@ Checked and already safe, now covered by tests: a `__proto__` key cannot grant a
 
 Notes that need no test now: validation `details` echo the names of unknown fields, so the frontend must show them as text, never as HTML; `/v1/health` has no rate limit (each call is one `SELECT 1` and one small Ollama request); passwords are not checked against a list of common passwords, which NIST recommends; a token keeps its role until it expires (1 hour), so demoting an admin takes effect after that; a token can outlive its account, which the documents layer answers with a 404 (see its section).
 
-## 14. Second review: security and architecture
+## 15. Second review: security and architecture
 
 On 2026-10-17, before the questions layer, the project was reviewed again: for security problems, and for places that break the layered architecture or the SOLID principles. Security suspicions were probed against the real app; the architecture was checked by reading the code and with a script that lists the imports between layers (no layer imports one it should not). As in the first review, every fix has a test that fails without it, checked by removing the fix and running the test.
 
@@ -511,7 +561,7 @@ Already fine: every query is parameterized and filtered by its owner, the domain
 | A5 | The queue decided to retry by looking at an HTTP status (503) | `ModelUnavailableError` | `jobQueue.test.ts` |
 | A7 | The list of user columns was duplicated in two services | Exported once from `users.service.ts` | existing auth tests |
 
-Deferred, and listed in [Pending work](#15-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
+Deferred, and listed in [Pending work](#16-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
 
 > [!NOTE]
 > **Decision: 3 uploads per user per day.** The quotas did not stop a loop of upload and delete, because deleting frees the slot, and every upload makes Ollama work. Accepted uploads are recorded in their own table, `upload_usage` (migration `002`), because deleting a document deletes its row. The limit counts the last 24 hours (a rolling window, like the planned question quota), the cleanup removes older rows, and only accepted uploads count, so a rejected one costs nothing. Going over answers 429, because it is a rate over time; the document and indexing quotas stay 409 and are checked first. The review proposed 10 per hour with the in-memory rate limiter; a count in the database, with the same value as the document limit, was chosen instead: it survives restarts and `GET /v1/users/me` can show it (`usage.uploadsToday`). Configurable with `MAX_UPLOADS_PER_DAY`.
@@ -537,10 +587,12 @@ Deferred, and listed in [Pending work](#15-pending-work): S5, `/v1/health` has n
 > [!NOTE]
 > **Decision: `ModelUnavailableError` for "try again later".** Ollama being unreachable is thrown as `ModelUnavailableError`, a subclass of `AppError` with status 503, and the queue puts a job back only for that type. Before, it did so for any `AppError` with status 503, which tied the background work to an HTTP code: a future 503 thrown for another reason would have been retried forever. HTTP clients still get the same 503.
 
-## 15. Pending work
+## 16. Pending work
 
-- **Next layer:** questions (`POST /v1/documents/:id/ask`, baseline and structured modes, the `language` parameter, the 10-per-minute and 50-per-day limits), then the event stream (`GET /v1/events`) with the `queued` event and live queue positions.
-- **Cold start (idea):** the first upload after Ollama starts waits for the model to load (about 55 seconds measured, with progress at 0). The API could send a tiny embedding request at startup to load the model in the background.
+- **Next layer:** the event stream (`GET /v1/events`): job events for the user's own jobs, and `queued` events with the live position of indexing jobs and of questions waiting for the model.
+- **Models unloaded after 5 idle minutes:** Ollama's default. Reloading both takes about 8 seconds (3 for the embedding model, 5 for the answer model), so the first question after a pause waits that long. A longer `keep_alive` would avoid it, at the cost of keeping 4.6 GB of video memory while the laptop is used for other things; left as it is.
+- **Frontend: the two answer modes:** a short description next to the mode selector: structured abstains more often and invents less (18/20 correct abstentions in RAG1's evaluation), baseline answers more questions (60/80 against 54/80).
+- **Questions in another language (idea):** a Spanish question about an English document finds no chunk above 0.30. The frontend could warn about it, or the brief's idea of answering in the document's language could be explored.
 - **Health rate limit (S5):** `/v1/health` is public and each call queries the database and Ollama. Add a per-address limit before the API is exposed to the internet.
 - **Graceful shutdown (S7):** on `SIGTERM` (for example `docker stop`), stop accepting requests, let the ones in progress finish, stop the worker and close the pool. Jobs already recover after an abrupt stop. Deployment step.
 - **Model provider interfaces (A6):** only if a second provider appears, such as the cloud model the brief mentions as an idea.
@@ -549,5 +601,5 @@ Deferred, and listed in [Pending work](#15-pending-work): S5, `/v1/health` has n
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.
 - **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `upload_usage` and `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.
 - **Tiny last chunks (idea):** the last chunk of a document can be very short and match questions unreliably; merging it into the previous chunk when it is under about 200 characters would avoid that.
-- **Deployment (step 5 of the brief):** Dockerfile and compose hardening (non-root user, read-only filesystem, `cap_drop: ALL`, no published API port), two database users (an owner for migrations and a limited one for the API), Cloudflare Tunnel, Turnstile and the frontend.
+- **Deployment (step 5 of the brief):** Dockerfile and compose hardening (non-root user, read-only filesystem, `cap_drop: ALL`, no published API port), two database users (an owner for migrations and a limited one for the API), Cloudflare Tunnel, Turnstile and the frontend. For the API, and with it the model preload, to start when the laptop boots: Docker Desktop starts with the Windows session and the API container has `restart: unless-stopped`; Ollama already starts with the session.
 - **Evaluation:** measure the Spanish prompts and the adjusted citation rule once the question endpoint works.

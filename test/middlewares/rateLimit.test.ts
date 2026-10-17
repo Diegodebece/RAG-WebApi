@@ -114,3 +114,42 @@ describe("rateLimitMiddleware", () => {
         assert.equal((await app.post("/login").send({ email: "bob@example.com", password: "wrong" })).status, 401);
     });
 });
+
+describe("per-user limit", () => {
+    // stands in for authenticateMiddleware: the test says who is logged in with a header
+    const buildUserLimitedApp = (limit: number) => {
+        const app = express();
+        app.set("trust proxy", true);
+        app.use((req, res, next) => {
+            const userId = req.header("X-Test-User");
+
+            if (userId) {
+                req.decoded = { id: userId, role: "user" };
+            }
+
+            next();
+        });
+        app.post("/ask", rateLimitMiddleware({ limit, windowMs: MINUTE, keyBy: "user" }), (req, res) => {
+            res.status(200).json({ ok: true });
+        });
+        app.use(errorMiddleware);
+        return app;
+    };
+
+    it("counts each user separately, whatever address they use", async () => {
+        const app = request(buildUserLimitedApp(2));
+        const ask = (userId: string, address: string) => app.post("/ask").set("X-Test-User", userId).set("X-Forwarded-For", address);
+
+        assert.equal((await ask("ana", "203.0.113.1")).status, 200);
+        assert.equal((await ask("ana", "203.0.113.2")).status, 200);
+        assert.equal((await ask("ana", "203.0.113.3")).status, 429, "a new address does not reset the user's counter");
+        assert.equal((await ask("bob", "203.0.113.1")).status, 200, "another user from the same address has their own counter");
+    });
+
+    it("falls back to the address when nobody is logged in", async () => {
+        const app = request(buildUserLimitedApp(1));
+
+        assert.equal((await app.post("/ask")).status, 200);
+        assert.equal((await app.post("/ask")).status, 429);
+    });
+});
