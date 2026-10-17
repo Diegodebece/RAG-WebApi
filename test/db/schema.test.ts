@@ -184,4 +184,21 @@ describe("withTransaction", () => {
 
         assert.equal(await countRows("users"), 0);
     });
+
+    it("survives its connection breaking mid-transaction, and reports the original error", async (t) => {
+        t.mock.method(console, "error", () => {});
+
+        // another connection ends this one while it runs a query, as a PostgreSQL restart would
+        const attempt = withTransaction(async (client) => {
+            const { rows: [{ pid }] } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            await Promise.all([client.query("SELECT pg_sleep(5)"), pool.query("SELECT pg_terminate_backend($1)", [pid])]);
+        });
+
+        // 57P01 is "terminating connection due to administrator command": the failed query, not the failed ROLLBACK
+        await assert.rejects(attempt, { code: "57P01" });
+
+        for (let query = 0; query < 12; query++) {
+            assert.equal((await pool.query<{ one: number }>("SELECT 1 AS one")).rows[0].one, 1, "the pool still lends working connections");
+        }
+    });
 });

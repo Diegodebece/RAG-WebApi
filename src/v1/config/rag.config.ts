@@ -10,6 +10,10 @@ export const RETRIEVAL_MIN_SCORE = 0.3;
 // qwen3-embedding:0.6b; must match the vector(1024) column
 export const EMBEDDING_DIMENSIONS = 1024;
 
+// Longest answer the model may generate, in tokens (about 750 words). RAG1's answers are a few sentences, so it
+// changes nothing for them; it only keeps a runaway answer from holding the model until the timeout.
+export const ANSWER_MAX_TOKENS = 1024;
+
 export const OLLAMA_OPTIONS = {
     temperature: 0,
     seed: 42,

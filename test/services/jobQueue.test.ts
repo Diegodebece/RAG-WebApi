@@ -50,6 +50,7 @@ const {
     notifyJobQueuedService,
     processQueuedJobsService,
     recoverJobsService,
+    requeueStuckJobsService,
     startJobWorkerService,
     stopJobWorkerService
 } = await import("../../src/v1/services/jobQueue.service.js");
@@ -293,6 +294,25 @@ describe("recoverJobsService", () => {
 
         assert.deepEqual(await status(jobId), { job: "queued", document: "pending", error: null, startedAt: null });
         const { rows } = await pool.query("SELECT count(*)::int AS count FROM chunks WHERE document_id = $1 AND embedding IS NOT NULL", [document.id]);
+        assert.equal(rows[0].count, 1);
+    });
+});
+
+describe("requeueStuckJobsService", () => {
+    it("puts back jobs stuck in processing for over a minute, keeping their vectors, and leaves recent ones alone", async () => {
+        const stuck = await createDocumentService(await createUser("ana@example.com"), { filename: "stuck.txt", text: longText("ana") });
+        const recent = await createDocumentService(await createUser("bob@example.com"), { filename: "recent.txt", text: longText("bob") });
+        await pool.query("UPDATE jobs SET status = 'processing', started_at = now() - interval '2 minutes' WHERE id = $1", [stuck.jobId]);
+        await pool.query("UPDATE documents SET status = 'indexing' WHERE id = $1", [stuck.document.id]);
+        await pool.query("UPDATE chunks SET embedding = $2::vector WHERE document_id = $1 AND chunk_index = 0", [stuck.document.id, JSON.stringify(vectorFor("kept"))]);
+        // just claimed by the worker: it may not have started yet, so it is not stuck
+        await pool.query("UPDATE jobs SET status = 'processing', started_at = now() WHERE id = $1", [recent.jobId]);
+
+        assert.equal(await requeueStuckJobsService(), 1);
+
+        assert.deepEqual(await status(stuck.jobId), { job: "queued", document: "pending", error: null, startedAt: null });
+        assert.equal((await status(recent.jobId)).job, "processing");
+        const { rows } = await pool.query("SELECT count(*)::int AS count FROM chunks WHERE document_id = $1 AND embedding IS NOT NULL", [stuck.document.id]);
         assert.equal(rows[0].count, 1);
     });
 });

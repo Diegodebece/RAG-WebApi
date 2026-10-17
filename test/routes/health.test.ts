@@ -4,6 +4,9 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import request from "supertest";
 
+// these tests change the dependencies' state between requests, so every request checks again
+process.env.HEALTH_CACHE_SECONDS = "0";
+
 // A fake Ollama, so these tests do not depend on the real one running on this computer.
 type FakeOllamaMode = "ready" | "missing-model" | "error";
 let mode: FakeOllamaMode = "ready";

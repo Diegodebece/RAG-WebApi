@@ -21,3 +21,6 @@ coverage/
 *.log
 .DS_Store
 Thumbs.db
+
+# Audit reports describe open vulnerabilities step by step; they stay local until the fixes are merged
+audit-report-*.md

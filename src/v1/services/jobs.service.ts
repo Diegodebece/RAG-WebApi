@@ -16,7 +16,7 @@ export const getJobByIdService = async (userId: string, id: string): Promise<Job
         `SELECT j.id, j.type, j.status, j.document_id AS "documentId", j.error,
                 CASE WHEN j.status = 'queued' THEN (
                     SELECT count(*)::int FROM jobs q
-                    WHERE q.status = 'queued' AND (q.created_at, q.id) <= (j.created_at, j.id)
+                    WHERE q.status = 'queued' AND q.type = 'index_document' AND (q.created_at, q.id) <= (j.created_at, j.id)
                 ) END AS "queuePosition",
                 json_build_object(
                     'done', (SELECT count(*)::int FROM chunks c WHERE c.document_id = j.document_id AND c.embedding IS NOT NULL),

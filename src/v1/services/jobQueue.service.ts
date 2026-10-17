@@ -6,6 +6,10 @@ import type { ClaimedJob } from "../types/jobs.type.js";
 // how often the worker looks for queued jobs it was not told about (for example after Ollama was down)
 const POLL_INTERVAL_MS = 10_000;
 
+// A job that has been "processing" this long without being the one this process runs is stuck. The margin
+// covers the moment between claiming a job and starting it.
+const STUCK_JOB_SECONDS = 60;
+
 // Takes the oldest queued indexing job and marks it as processing. SKIP LOCKED keeps two workers
 // (if there ever were two) from taking the same job.
 const claimNextJob = async (): Promise<ClaimedJob | null> => {
@@ -33,6 +37,8 @@ const emitQueuePositions = async (): Promise<void> => {
 let draining: Promise<void> | null = null;
 let workerStarted = false;
 let pollTimer: NodeJS.Timeout | null = null;
+// the job this process is running, if any
+let currentJobId: string | null = null;
 
 // Runs queued jobs one at a time until the queue is empty or Ollama is unreachable. Calls made while it
 // runs share the same run, so a job is never processed twice in parallel.
@@ -50,13 +56,19 @@ export const processQueuedJobsService = async (): Promise<void> => {
                     return;
                 }
 
-                // every job still waiting moved up one place
-                await emitQueuePositions();
+                currentJobId = job.id;
 
-                if ((await runIndexingJobService(job)) === "requeued") {
-                    // the job is back at the front of the line
+                try {
+                    // every job still waiting moved up one place
                     await emitQueuePositions();
-                    return;
+
+                    if ((await runIndexingJobService(job)) === "requeued") {
+                        // the job is back at the front of the line
+                        await emitQueuePositions();
+                        return;
+                    }
+                } finally {
+                    currentJobId = null;
                 }
             }
         } finally {
@@ -96,10 +108,53 @@ export const notifyJobQueuedService = (): void => {
     }
 };
 
+// An error after a job was claimed (the database failing in the middle, for example) can leave it "processing":
+// it would never run again while the API lives, and its owner could not upload anything else. This puts such
+// jobs back in the queue, keeping their stored vectors: every processing job that is not the one this process
+// runs and that started over a minute ago (one API process runs one job at a time). Returns how many it moved.
+export const requeueStuckJobsService = async (): Promise<number> => {
+    const { rows } = await pool.query<{ documentId: string }>(
+        `UPDATE jobs SET status = 'queued', started_at = NULL
+         WHERE status = 'processing' AND type = 'index_document'
+           AND id IS DISTINCT FROM $1 AND started_at < now() - make_interval(secs => $2)
+         RETURNING document_id AS "documentId"`,
+        [currentJobId, STUCK_JOB_SECONDS]
+    );
+
+    if (rows.length > 0) {
+        await pool.query(
+            "UPDATE documents SET status = 'pending' WHERE id = ANY($1::uuid[]) AND status = 'indexing'",
+            [rows.map((row) => row.documentId)]
+        );
+    }
+
+    return rows.length;
+};
+
+// Every POLL_INTERVAL_MS: put stuck jobs back, then start the worker if it is idle. Unlike an upload, a poll that
+// changed nothing sends no queue positions, so a busy worker does not repeat the same events every 10 seconds.
+const pollQueue = async (): Promise<void> => {
+    try {
+        const requeued = await requeueStuckJobsService();
+
+        if (requeued > 0) {
+            console.log(`Requeued ${requeued} stuck indexing job(s)`);
+            notifyJobQueuedService();
+            return;
+        }
+    } catch (error) {
+        console.error("Could not look for stuck jobs", error);
+    }
+
+    if (workerStarted && !draining) {
+        void runQueueInBackground();
+    }
+};
+
 export const startJobWorkerService = (): void => {
     workerStarted = true;
     notifyJobQueuedService();
-    pollTimer = setInterval(notifyJobQueuedService, POLL_INTERVAL_MS);
+    pollTimer = setInterval(() => void pollQueue(), POLL_INTERVAL_MS);
 };
 
 export const stopJobWorkerService = (): void => {

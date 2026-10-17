@@ -1,6 +1,7 @@
 import type { Request } from "express";
-import { ipKeyGenerator, rateLimit } from "express-rate-limit";
+import { rateLimit } from "express-rate-limit";
 import { AppError } from "../utils/appError.util.js";
+import { getClientAddress } from "../utils/clientAddress.util.js";
 
 interface RateLimitOptions {
     limit: number;
@@ -14,9 +15,8 @@ interface RateLimitOptions {
     onlySuccesses?: boolean;
 }
 
-// ipKeyGenerator groups IPv6 addresses by network, so one client cannot dodge the limit by changing addresses.
-// Behind Cloudflare, req.ip must come from CF-Connecting-IP; that is configured with the tunnel (deployment step).
-const clientAddressKey = (req: Request): string => ipKeyGenerator(req.ip ?? "unknown");
+// one counter per client address; behind the tunnel, the address Cloudflare reported (see getClientAddress)
+const clientAddressKey = (req: Request): string => getClientAddress(req);
 
 // Counting per email *and* address stops guessing one account from one address, without letting someone
 // else lock the owner out by failing on purpose from another address. Email limits read the raw body, so they

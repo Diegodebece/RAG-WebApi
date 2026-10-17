@@ -69,13 +69,27 @@ describe("auth input abuse", () => {
         }
     });
 
-    it("rejects form-encoded arrays where a string is expected", async () => {
+    it("rejects arrays and objects where a string is expected", async () => {
+        for (const [label, body] of [
+            ["array email", { email: ["a@example.com", "b@example.com"], password }],
+            ["object email", { email: { $gt: "" }, password }],
+            ["array password", { email: "a@example.com", password: [password] }]
+        ] as const) {
+            const response = await request(app).post("/v1/auth/login").send(body);
+
+            assert.equal(response.status, 400, label);
+            assert.match(response.body.details.join(" "), /must be a string/, label);
+        }
+    });
+
+    it("ignores form-encoded bodies: the API reads only JSON", async () => {
         const response = await request(app)
             .post("/v1/auth/login")
             .type("form")
             .send(`email[]=a@example.com&email[]=b@example.com&password=${encodeURIComponent(password)}`);
 
         assert.equal(response.status, 400);
+        assert.deepEqual(response.body.details, ["Email is required", "Password is required"]);
     });
 
     it("creates one account when the same email registers twice at the same time", async () => {

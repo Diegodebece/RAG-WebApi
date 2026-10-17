@@ -35,7 +35,8 @@ process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${(fakeOllama.address() as Addre
 const SECRET = "test-secret-only-for-these-tests-0123456789";
 process.env.SECRET_KEY = SECRET;
 process.env.MAX_EVENT_STREAMS_PER_USER = "2";
-process.env.MAX_EVENT_STREAMS = "3";
+process.env.MAX_EVENT_STREAMS_PER_ADDRESS = "3";
+process.env.MAX_EVENT_STREAMS = "4";
 process.env.EVENT_STREAM_HEARTBEAT_SECONDS = "1";
 
 const { app } = await import("../../src/app.js");
@@ -44,6 +45,7 @@ const { resetTestDatabase } = await import("../db/testDatabase.js");
 const { createTestUser } = await import("./testUsers.js");
 const { emitEvent } = await import("../../src/v1/services/events.service.js");
 const { processQueuedJobsService } = await import("../../src/v1/services/jobQueue.service.js");
+const { closeAllEventStreamsService } = await import("../../src/v1/services/eventStreams.service.js");
 
 const server = app.listen(0, "127.0.0.1");
 await new Promise((resolve) => server.once("listening", resolve));
@@ -63,8 +65,10 @@ interface Stream {
 
 const openStreams: Stream[] = [];
 
-const openStream = (token: string): Promise<Stream> => new Promise((resolve) => {
-    const req = get({ host: "127.0.0.1", port, path: "/v1/events", headers: { Authorization: `Bearer ${token}` } }, (res) => {
+// address: the client address the tunnel reports in X-Forwarded-For; without it, the test's own address counts
+const openStream = (token: string, address?: string): Promise<Stream> => new Promise((resolve) => {
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}`, ...(address ? { "X-Forwarded-For": address } : {}) };
+    const req = get({ host: "127.0.0.1", port, path: "/v1/events", headers }, (res) => {
         const frames: string[] = [];
         let raw = "";
         let buffer = "";
@@ -187,13 +191,28 @@ describe("GET /v1/events", () => {
         assert.equal((await openStream(ana.token)).status, 200, "the closed stream gave its place back");
     });
 
+    it("allows three streams per address, whoever opens them", async () => {
+        const users = await Promise.all(["a@example.com", "b@example.com", "c@example.com", "d@example.com"].map((email) => createTestUser(email)));
+        for (const user of users.slice(0, 3)) {
+            assert.equal((await openStream(user.token, "203.0.113.9")).status, 200);
+        }
+
+        const refused = await openStream(users[3].token, "203.0.113.9");
+        await endOf(refused);
+
+        assert.equal(refused.status, 429);
+        assert.deepEqual(JSON.parse(refused.body()), { message: "Too many open event streams from this address (3): close one first" });
+        assert.equal((await openStream(users[3].token, "198.51.100.9")).status, 200, "the same user from another address can");
+    });
+
     it("answers 503 when the server already has the maximum number of streams open", async () => {
         const users = await Promise.all(["a@example.com", "b@example.com", "c@example.com"].map((email) => createTestUser(email)));
-        await openStream(users[0].token);
-        await openStream(users[0].token);
-        await openStream(users[1].token);
+        await openStream(users[0].token, "203.0.113.1");
+        await openStream(users[0].token, "203.0.113.2");
+        await openStream(users[1].token, "203.0.113.3");
+        await openStream(users[1].token, "203.0.113.4");
 
-        const refused = await openStream(users[2].token);
+        const refused = await openStream(users[2].token, "203.0.113.5");
         await endOf(refused);
 
         assert.equal(refused.status, 503);
@@ -209,6 +228,24 @@ describe("GET /v1/events", () => {
 
         assert.equal(stream.status, 200);
         assert.equal(closedInTime, true, "the server ended the stream at the token's expiry");
+
+        // the expired stream gave its places back, and an event for its user goes nowhere without failing
+        emitEvent({ type: "question_started", userId: ana.id });
+        assert.equal((await openStream(ana.token)).status, 200);
+        assert.equal((await openStream(ana.token)).status, 200);
+    });
+
+    it("ends every open stream when the server shuts down", async () => {
+        const ana = await createTestUser("ana@example.com");
+        const bob = await createTestUser("bob@example.com");
+        const streams = [await openStream(ana.token), await openStream(bob.token)];
+        await waitFor(() => streams.every((stream) => stream.frames.length > 0), "both streams are open");
+
+        closeAllEventStreamsService();
+
+        const ended = await Promise.race([Promise.all(streams.map((stream) => stream.ended)).then(() => true), sleep(1000).then(() => false)]);
+        assert.equal(ended, true);
+        assert.equal((await openStream(ana.token)).status, 200, "their places were given back");
     });
 });
 
