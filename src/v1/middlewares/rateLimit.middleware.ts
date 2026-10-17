@@ -9,6 +9,8 @@ interface RateLimitOptions {
     keyBy: "ip" | "email";
     // count only requests that end in an error response, such as failed logins
     onlyFailures?: boolean;
+    // count only requests that succeed, such as accounts actually created
+    onlySuccesses?: boolean;
 }
 
 // ipKeyGenerator groups IPv6 addresses by network, so one client cannot dodge the limit by changing addresses.
@@ -32,6 +34,7 @@ export const rateLimitMiddleware = (options: RateLimitOptions) => rateLimit({
     standardHeaders: "draft-8",
     legacyHeaders: false,
     skipSuccessfulRequests: options.onlyFailures ?? false,
+    skipFailedRequests: options.onlySuccesses ?? false,
     keyGenerator: options.keyBy === "email" ? emailKey : clientAddressKey,
     // hand the error to errorMiddleware, so a 429 has the same { message } body as every other error
     handler: (req, res, next) => next(new AppError(429, "Too many requests, please try again later"))

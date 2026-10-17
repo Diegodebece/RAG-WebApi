@@ -17,8 +17,17 @@ const readPositiveInteger = (name: string, defaultValue: number): number => {
     return value;
 };
 
+const MINUTE_MS = 60 * 1000;
+
+export const REGISTRATION_WINDOW_MS = 60 * MINUTE_MS;
+
+export const LOGIN_WINDOW_MS = 15 * MINUTE_MS;
+
 export const REGISTRATIONS_PER_HOUR = readPositiveInteger("REGISTRATIONS_PER_HOUR", 3);
 
 export const LOGINS_PER_15_MINUTES = readPositiveInteger("LOGINS_PER_15_MINUTES", 10);
 
 export const FAILED_LOGINS_PER_EMAIL_PER_15_MINUTES = readPositiveInteger("FAILED_LOGINS_PER_EMAIL_PER_15_MINUTES", 5);
+
+// how long a login token stays valid
+export const TOKEN_LIFETIME_SECONDS = readPositiveInteger("TOKEN_LIFETIME_SECONDS", 3600);

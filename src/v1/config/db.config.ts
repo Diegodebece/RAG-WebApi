@@ -9,7 +9,8 @@ if (!connectionString) {
 }
 
 // One pool for the whole process: it keeps a few connections open and lends one to each query.
-export const pool = new pg.Pool({ connectionString });
+// Without a connection timeout, a query waits forever when PostgreSQL is down instead of failing.
+export const pool = new pg.Pool({ connectionString, connectionTimeoutMillis: 5000 });
 
 // An idle connection can break (for example when PostgreSQL restarts). Without a listener,
 // that "error" event would crash the process; the pool replaces the connection on its own.
