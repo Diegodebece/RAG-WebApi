@@ -1,6 +1,7 @@
-import type { Fragment } from "../types/answers.type.js";
+import type { AnswerLanguage, Fragment } from "../types/answers.type.js";
+import { isInsufficientEvidenceAnswer } from "./answerStatus.util.js";
 import { hasValidCitations } from "./citations.util.js";
-import { INSUFFICIENT_EVIDENCE_ANSWER } from "./prompts.util.js";
+import { INSUFFICIENT_EVIDENCE_ANSWERS } from "./prompts.util.js";
 
 interface StructuredDecision {
     answerable: boolean;
@@ -13,9 +14,9 @@ const isStructuredDecision = (value: unknown): value is StructuredDecision =>
     && "answer" in value && typeof value.answer === "string";
 
 // Turns the model's raw structured-mode reply into the final answer text, like RAG1's baseline-structured variant:
-// "answerable: false" becomes the fallback sentence. Throws when the reply breaks the contract
-// (invalid JSON, wrong shape, empty answer, missing or invented citations); the caller decides how to report it.
-export const interpretStructuredAnswer = (raw: string, fragments: Fragment[]): string => {
+// "answerable: false" becomes the fallback sentence in the requested language. Throws when the reply breaks the
+// contract (invalid JSON, wrong shape, empty answer, missing or invented citations); the caller decides how to report it.
+export const interpretStructuredAnswer = (raw: string, fragments: Fragment[], language: AnswerLanguage = "en"): string => {
     let decision: unknown;
 
     try {
@@ -29,12 +30,12 @@ export const interpretStructuredAnswer = (raw: string, fragments: Fragment[]): s
     }
 
     if (!decision.answerable) {
-        return INSUFFICIENT_EVIDENCE_ANSWER;
+        return INSUFFICIENT_EVIDENCE_ANSWERS[language];
     }
 
     const answer = decision.answer.trim();
 
-    if (answer === "" || answer === INSUFFICIENT_EVIDENCE_ANSWER) {
+    if (answer === "" || isInsufficientEvidenceAnswer(answer)) {
         throw new Error("An answerable structured response must contain an answer");
     }
 

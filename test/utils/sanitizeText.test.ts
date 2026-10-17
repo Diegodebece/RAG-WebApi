@@ -16,21 +16,21 @@ describe("sanitizeText", () => {
     });
 
     it("removes byte order marks", () => {
-        assert.equal(sanitizeText("﻿hello﻿ world"), "hello world");
+        assert.equal(sanitizeText("\uFEFFhello\uFEFF world"), "hello world");
     });
 
     it("replaces lone surrogates and keeps valid pairs", () => {
-        assert.equal(sanitizeText("a\uD800b"), "a�b");
-        assert.equal(sanitizeText("a\uDC00b"), "a�b");
+        assert.equal(sanitizeText("a\uD800b"), "a\uFFFDb");
+        assert.equal(sanitizeText("a\uDC00b"), "a\uFFFDb");
         assert.equal(sanitizeText("emoji 😀"), "emoji 😀");
     });
 
     it("normalizes to NFC so equal-looking text has one encoding", () => {
-        assert.equal(sanitizeText("Café"), "Café");
+        assert.equal(sanitizeText("Cafe\u0301"), "Caf\u00E9");
     });
 
     it("trims and returns an empty string when nothing readable is left", () => {
         assert.equal(sanitizeText("  \n hello \t "), "hello");
-        assert.equal(sanitizeText("\u0000\u0001 \r\n ﻿"), "");
+        assert.equal(sanitizeText("\u0000\u0001 \r\n \uFEFF"), "");
     });
 });

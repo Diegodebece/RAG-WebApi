@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { interpretStructuredAnswer } from "../../src/v1/utils/structuredAnswer.util.js";
-import { INSUFFICIENT_EVIDENCE_ANSWER } from "../../src/v1/utils/prompts.util.js";
+import { INSUFFICIENT_EVIDENCE_ANSWERS } from "../../src/v1/utils/prompts.util.js";
 import type { Fragment } from "../../src/v1/types/answers.type.js";
 
 const fragments: Fragment[] = [
@@ -19,7 +19,27 @@ describe("interpretStructuredAnswer", () => {
     });
 
     it("returns the fallback sentence when the model says it is not answerable", () => {
-        assert.equal(interpretStructuredAnswer(reply({ answerable: false, answer: "" }), fragments), INSUFFICIENT_EVIDENCE_ANSWER);
+        assert.equal(interpretStructuredAnswer(reply({ answerable: false, answer: "" }), fragments), INSUFFICIENT_EVIDENCE_ANSWERS.en);
+    });
+
+    it("returns the fallback sentence in the requested language", () => {
+        assert.equal(
+            interpretStructuredAnswer(reply({ answerable: false, answer: "" }), fragments, "es"),
+            INSUFFICIENT_EVIDENCE_ANSWERS.es
+        );
+    });
+
+    it("returns a Spanish answer that is correctly cited", () => {
+        const answer = interpretStructuredAnswer(reply({ answerable: true, answer: "En el 221B de Baker Street [F1]." }), fragments, "es");
+
+        assert.equal(answer, "En el 221B de Baker Street [F1].");
+    });
+
+    it("throws when an answerable reply is a fallback sentence of any language", () => {
+        assert.throws(
+            () => interpretStructuredAnswer(reply({ answerable: true, answer: INSUFFICIENT_EVIDENCE_ANSWERS.es }), fragments, "en"),
+            /must contain an answer/
+        );
     });
 
     it("throws on a reply that is not JSON", () => {
@@ -35,7 +55,7 @@ describe("interpretStructuredAnswer", () => {
     it("throws when an answerable reply is empty or is the fallback sentence", () => {
         assert.throws(() => interpretStructuredAnswer(reply({ answerable: true, answer: "  " }), fragments), /must contain an answer/);
         assert.throws(
-            () => interpretStructuredAnswer(reply({ answerable: true, answer: INSUFFICIENT_EVIDENCE_ANSWER }), fragments),
+            () => interpretStructuredAnswer(reply({ answerable: true, answer: INSUFFICIENT_EVIDENCE_ANSWERS.en }), fragments),
             /must contain an answer/
         );
     });
