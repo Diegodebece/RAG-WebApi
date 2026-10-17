@@ -34,7 +34,7 @@ description: How to write Joi request-body schemas for an Express API. Use when 
 - Enums: `.valid("a", "b")` with an `"any.only"` message listing the options.
 - Do **not** use `.default()`: defaults belong to the database/service, and a default in a create schema leaks into the derived update schema.
 - Never accept privileged fields from public endpoints (e.g. `role`, `plan`, `id`, `userId` in a register schema). Unknown keys are rejected by Joi by default; keep it that way.
-- Ids: validate their format (`Joi.number().integer().positive()` for SQL ids; adjust to the project's id type).
+- Ids are UUIDs: `Joi.string().guid({ version: "uuidv4" })` with a `"string.guid"` message; the input type declares them as `string`.
 
 ## 5. Checklist
 

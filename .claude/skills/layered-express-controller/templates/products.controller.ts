@@ -12,9 +12,9 @@ export const getProducts = async (req: Request, res: Response, next: NextFunctio
     }
 };
 
-export const getProductById = async (req: Request, res: Response, next: NextFunction) => {
+export const getProductById = async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
     try {
-        const id = Number(req.params.id);
+        const { id } = req.params;
         const product = await getProductByIdService(id);
         return res.status(200).json({ success: true, message: "Product retrieved successfully", data: product });
     } catch (error) {
@@ -31,9 +31,9 @@ export const createProduct = async (req: Request, res: Response, next: NextFunct
     }
 };
 
-export const updateProduct = async (req: Request, res: Response, next: NextFunction) => {
+export const updateProduct = async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
     try {
-        const id = Number(req.params.id);
+        const { id } = req.params;
         const product = await updateProductService(id, req.validatedBody as UpdateProductInput);
         return res.status(200).json({ success: true, message: "Product updated successfully", data: product });
     } catch (error) {
@@ -41,9 +41,9 @@ export const updateProduct = async (req: Request, res: Response, next: NextFunct
     }
 };
 
-export const deleteProduct = async (req: Request, res: Response, next: NextFunction) => {
+export const deleteProduct = async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
     try {
-        const id = Number(req.params.id);
+        const { id } = req.params;
         await deleteProductService(id);
         return res.status(200).json({ success: true, message: "Product deleted successfully" });
     } catch (error) {
