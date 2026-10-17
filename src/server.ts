@@ -1,17 +1,21 @@
 import { app } from "./app.js";
+import { closeServerGracefully } from "./shutdown.js";
+import { pool } from "./v1/config/db.config.js";
 import { getStartupConfigProblems } from "./v1/config/env.config.js";
 import { CLEANUP_INTERVAL_MS } from "./v1/config/limits.config.js";
+import { HOST, PORT } from "./v1/config/server.config.js";
 import { deleteExpiredDataService } from "./v1/services/cleanup.service.js";
 import { subscribeToEvents } from "./v1/services/events.service.js";
-import { recoverJobsService, startJobWorkerService } from "./v1/services/jobQueue.service.js";
+import { closeAllEventStreamsService } from "./v1/services/eventStreams.service.js";
+import { recoverJobsService, startJobWorkerService, stopJobWorkerService } from "./v1/services/jobQueue.service.js";
 import { runWithModelTurnService } from "./v1/services/modelTurn.service.js";
 import { loadModelsService } from "./v1/services/ollama.service.js";
 import { ModelUnavailableError } from "./v1/utils/modelUnavailableError.util.js";
 
-const PORT = Number(process.env.PORT) || 3000;
+// Docker waits 10 seconds after SIGTERM before killing the container
+const SHUTDOWN_TIMEOUT_MS = 9_000;
 
-// 127.0.0.1 keeps the API reachable from this computer only; inside Docker HOST must be 0.0.0.0.
-const HOST = process.env.HOST || "127.0.0.1";
+let cleanupTimer: NodeJS.Timeout | undefined;
 
 const problems = getStartupConfigProblems(process.env);
 
@@ -76,10 +80,31 @@ const startBackgroundWork = async (): Promise<void> => {
     void loadModels();
     startJobWorkerService();
     void runCleanup();
-    setInterval(() => void runCleanup(), CLEANUP_INTERVAL_MS);
+    cleanupTimer = setInterval(() => void runCleanup(), CLEANUP_INTERVAL_MS);
 };
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
     console.log(`Server running on http://${HOST}:${PORT}`);
     void startBackgroundWork();
 });
+
+// On docker stop (SIGTERM) or Ctrl+C (SIGINT): no new work, let the requests in progress finish, then close the
+// database. An indexing batch cut short stays "processing" and is resumed on the next start.
+const shutDown = async (signal: string): Promise<void> => {
+    console.log(`${signal} received: finishing the requests in progress`);
+    stopJobWorkerService();
+    clearInterval(cleanupTimer);
+
+    try {
+        await closeServerGracefully(server, closeAllEventStreamsService, SHUTDOWN_TIMEOUT_MS);
+        await pool.end();
+        console.log("Server stopped");
+        process.exit(0);
+    } catch (error) {
+        console.error("Could not shut down cleanly", error);
+        process.exit(1);
+    }
+};
+
+process.once("SIGTERM", () => void shutDown("SIGTERM"));
+process.once("SIGINT", () => void shutDown("SIGINT"));

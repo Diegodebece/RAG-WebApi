@@ -29,10 +29,11 @@ const buildFailedLoginApp = (limit: number) => {
 };
 
 describe("failed-login limit and account lockout", () => {
-    // Simulates two clients with X-Forwarded-For, which the real app does not trust (trust proxy is off).
+    // Two clients behind a proxy on this computer, with the same trust proxy setting as the real app
+    // (test/routes/clientAddress.test.ts checks the real app itself).
     const buildTwoClientApp = () => {
         const app = express();
-        app.set("trust proxy", true);
+        app.set("trust proxy", "loopback");
         app.use(express.json());
         app.post("/login", rateLimitMiddleware({ limit: 2, windowMs: MINUTE, keyBy: "emailAndIp", onlyFailures: true }), (req, res) => {
             res.status(req.body.password === "right" ? 200 : 401).json({});
@@ -119,7 +120,7 @@ describe("per-user limit", () => {
     // stands in for authenticateMiddleware: the test says who is logged in with a header
     const buildUserLimitedApp = (limit: number) => {
         const app = express();
-        app.set("trust proxy", true);
+        app.set("trust proxy", "loopback");
         app.use((req, res, next) => {
             const userId = req.header("X-Test-User");
 

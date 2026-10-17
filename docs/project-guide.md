@@ -20,7 +20,8 @@ Contents:
 14. [Agreed limits](#14-agreed-limits)
 15. [Security review](#15-security-review)
 16. [Second review: security and architecture](#16-second-review-security-and-architecture)
-17. [Pending work](#17-pending-work)
+17. [Third review: independent audit](#17-third-review-independent-audit)
+18. [Pending work](#18-pending-work)
 
 ## 1. Origin and goal
 
@@ -465,13 +466,13 @@ Two observations from that run, not yet decisions: a Spanish question about an E
 > **Decision: one turn with the model for the whole API.** Every Ollama request goes through `modelTurn.service.ts`, first come first served: indexing takes a turn per batch of 10 chunks, a question one turn for its whole answer. A question therefore waits for at most one batch (about 200 ms) instead of a whole document, and Ollama never gets two requests at once. A test indexes a document while a question arrives and checks both: the question is answered before the last batch, and Ollama never has two requests at the same time.
 
 > [!NOTE]
-> **Decision: at most 60 seconds in line, 20 questions waiting, one per user.** A question whose turn has not come after 60 seconds (`MAX_QUESTION_WAIT_SECONDS`) leaves the line with a 503, which keeps the request well under the 100 seconds after which Cloudflare cuts a response. With 20 questions already waiting (`MAX_WAITING_QUESTIONS`) a new one gets the 503 at once, before it is counted. Each user can have one question waiting or being answered (409 for a second one), so nobody fills the line alone.
+> **Decision: at most 60 seconds, 20 questions waiting, one per user.** A question that has not finished after 60 seconds in total (`MAX_QUESTION_SECONDS`; the first version limited only the wait in line, see [section 17](#17-third-review-independent-audit)) gets a 503 if it was still waiting, a 504 if the model was answering, which keeps the request well under the 100 seconds after which Cloudflare cuts a response. With 20 questions already waiting (`MAX_WAITING_QUESTIONS`) a new one gets the 503 at once, before it is counted. Each user can have one question waiting or being answered (409 for a second one), so nobody fills the line alone.
 
 > [!NOTE]
 > **Decision: a closed browser drops its question.** The controller turns the connection closing before the response into an `AbortSignal`: a question still in line leaves it, and one being answered aborts its Ollama request, which stops the generation. The model never works for nobody.
 
 > [!NOTE]
-> **Decision: 10 questions per minute and 30 per day, counted when accepted.** The per-minute limit is counted in memory per user (`rateLimitMiddleware` with the new `keyBy: "user"`), for every request. The daily limit was lowered from the brief's 50 to 30, counted in `question_usage` over the last 24 hours, like uploads; going over answers 429. A question counts when it is accepted, before the model is asked, and is not given back if the answer fails later: simple, and safe when two requests arrive together, because the user's row is locked while counting. Rejected questions (invalid, not found, not ready, busy) are not counted.
+> **Decision: 10 questions per minute and 30 per day, counted when accepted.** The per-minute limit is counted in memory per user (`rateLimitMiddleware` with the new `keyBy: "user"`), for every request. The daily limit was lowered from the brief's 50 to 30, counted in `question_usage` over the last 24 hours, like uploads; going over answers 429. A question counts when it is accepted, before the model is asked, which is safe when two requests arrive together, because the user's row is locked while counting. Since the third review it is given back when no answer came (see [section 17](#17-third-review-independent-audit)). Rejected questions (invalid, not found, not ready, busy) are not counted.
 
 > [!NOTE]
 > **Decision: a broken structured reply means "not enough evidence".** In structured mode the model must return `{"answerable": ..., "answer": ...}` with citations of fragments it received. When the reply breaks that contract (no citation, an invented one, an empty answer, or no JSON), the API answers `insufficient_evidence` with the fallback sentence instead of an error: an answer that cannot be checked should not be shown. Only the reason is logged, never the reply, which may quote the user's document.
@@ -506,7 +507,7 @@ Measured: an open stream takes about 35 KB of memory, counting both ends of the 
 > **Decision: the frontend reads the stream with `fetch()`, sending the token in the header.** The browser's `EventSource` cannot send an `Authorization` header. The brief offered two ways out: read the stream with `fetch()`, which can, or trade the token for a short-lived one-use ticket to put in the URL. The first was chosen: the server authenticates the stream like any other route, and no secret travels in a URL, where proxies log it. A token in the query string was ruled out for the same reason. The frontend reads the messages itself (a small library can do it) and reconnects when the connection drops.
 
 > [!NOTE]
-> **Decision: 2 streams per user and 30 in total.** Each stream holds a connection. A user can have 2 open (for example two tabs); a third gets a 429. With 30 open in total, a new one gets a 503, the server is full, as the service skill reserves 503 for a full capacity (the plan said 429 for both). A refused client can fall back to reading `GET /v1/jobs/:id` every few seconds.
+> **Decision: 2 streams per user, 4 per address and 30 in total.** Each stream holds a connection. A user can have 2 open (for example two tabs); a third gets a 429, and so does a fifth from one address (added in the third review). With 30 open in total, a new one gets a 503, the server is full, as the service skill reserves 503 for a full capacity (the plan said 429 for both). A refused client can fall back to reading `GET /v1/jobs/:id` every few seconds.
 
 > [!NOTE]
 > **Decision: a stream ends when its token expires.** A token cannot be revoked before it expires, so its expiry is the longest a stream may stay open: the server ends it then, and the frontend reconnects with a new token. To know the moment, `req.decoded` now carries `expiresAt`, and tokens without an expiry, which would never expire, are rejected. In practice streams last much less: the frontend opens one only while something is pending (a document being indexed or a question waiting) and closes it afterwards, so they last seconds, or a couple of minutes on a busy server.
@@ -519,7 +520,7 @@ Measured: an open stream takes about 35 KB of memory, counting both ends of the 
 
 ## 13. Local environment
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#17-pending-work)).
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#18-pending-work)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -539,10 +540,12 @@ The enforced values can be changed in `.env` (see `.env.example`).
 | Documents per user | 3 |
 | Uploads per user | 3 per day (last 24 hours, deleted documents included) |
 | Document size | 200,000 characters |
-| Questions per user | 10 per minute, 30 per day, 1 at a time |
+| Upload requests per user | 5 per minute |
+| Questions per user | 10 per minute, 30 per day, 1 at a time, given back when unanswered |
 | Question length | 1,000 characters |
-| Waiting for the model | 60 seconds at most, 20 questions waiting |
-| Event streams | 2 per user, 30 in total |
+| One question, in total | 60 seconds, with 20 questions waiting at most |
+| Event streams | 2 per user, 4 per address, 30 in total |
+| Health checks | 30 per minute per address, each report reused for 10 seconds |
 | Indexing jobs per user | 1 at a time |
 | Job queue length | 20 |
 | Document lifetime | 24 hours |
@@ -595,7 +598,7 @@ Already fine: every query is parameterized and filtered by its owner, the domain
 | A5 | The queue decided to retry by looking at an HTTP status (503) | `ModelUnavailableError` | `jobQueue.test.ts` |
 | A7 | The list of user columns was duplicated in two services | Exported once from `users.service.ts` | existing auth tests |
 
-Deferred, and listed in [Pending work](#17-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
+Deferred, and listed in [Pending work](#18-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
 
 > [!NOTE]
 > **Decision: 3 uploads per user per day.** The quotas did not stop a loop of upload and delete, because deleting frees the slot, and every upload makes Ollama work. Accepted uploads are recorded in their own table, `upload_usage` (migration `002`), because deleting a document deletes its row. The limit counts the last 24 hours (a rolling window, like the planned question quota), the cleanup removes older rows, and only accepted uploads count, so a rejected one costs nothing. Going over answers 429, because it is a rate over time; the document and indexing quotas stay 409 and are checked first. The review proposed 10 per hour with the in-memory rate limiter; a count in the database, with the same value as the document limit, was chosen instead: it survives restarts and `GET /v1/users/me` can show it (`usage.uploadsToday`). Configurable with `MAX_UPLOADS_PER_DAY`.
@@ -621,17 +624,53 @@ Deferred, and listed in [Pending work](#17-pending-work): S5, `/v1/health` has n
 > [!NOTE]
 > **Decision: `ModelUnavailableError` for "try again later".** Ollama being unreachable is thrown as `ModelUnavailableError`, a subclass of `AppError` with status 503, and the queue puts a job back only for that type. Before, it did so for any `AppError` with status 503, which tied the background work to an HTTP code: a future 503 thrown for another reason would have been retried forever. HTTP clients still get the same 503.
 
-## 17. Pending work
+## 17. Third review: independent audit
+
+On 2026-10-17, before exposing the API, the code was audited by a separate agent that had not seen this guide or any of the conversations behind it (`.claude/agents/code-auditor.md`). It can only read: its tools are `Read`, `Grep` and `Glob`, it starts without any `CLAUDE.md`, and a hook (`.claude/hooks/auditor-read-scope.mjs`, with its own tests) limits it to `src/`, `test/`, `migrations/`, `node_modules/` and a few configuration files: this guide, the skills, the private documents and `.env` are out of its reach. Each finding was then checked against the code or reproduced, and each fix has a test that fails without it. The report itself stays out of git (`audit-report-*.md` in `.gitignore`): it describes open problems step by step.
+
+It found no hole in access control and no SQL injection.
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| F1 | Behind the tunnel every request came from the tunnel, so every limit by address was one counter for the whole internet: ten logins from anyone blocked everyone's login | `trust proxy` set to the proxy's addresses (`TRUSTED_PROXIES`) | `clientAddress.test.ts` |
+| F2 | No cap on an answer's length; the real model never went past 313 tokens in hostile tries | `num_predict`: 1,024 tokens | `questions.test.ts` |
+| F3 | A database error after a job was claimed left it `processing` forever, blocking its owner's uploads | The worker's poll requeues stuck jobs | `jobQueue.test.ts` |
+| F4 | A few accounts could take all 30 event streams | 4 streams per address, on top of 2 per user | `events.test.ts` |
+| F5 | A database connection breaking during a transaction crashed the process (reproduced) | `withTransaction` listens for the error and drops the broken connection; a failed rollback no longer hides the original error | `schema.test.ts` |
+| F6 | Uploads had no per-minute limit, and up to 2 MB were parsed, cleaned and chunked before the quota check | 5 upload requests per minute per user before the body is read, and a quick quota check before the text work | `uploadsRateLimit.test.ts`, `documents.test.ts` |
+| F7 | `/v1/health` is public and each call reached the database and Ollama | The report is reused for 10 seconds, 30 checks per minute per address | `healthLimits.test.ts` |
+| F8 | A question could take up to 300 s (past Cloudflare's 100-second cut) and lost quota when it got no answer | 60 seconds in total per question; no answer, no count | `questions.test.ts` |
+| F9 | An id with broken percent-encoding answered 500 and logged a stack trace (reproduced) | Library errors with a 4xx status answer that status | `error.test.ts`, `documents.test.ts` |
+| F11 | The global limits (queue length, questions waiting) could be passed by requests arriving together | A shared lock for the queue check; the question's place in line is reserved with no wait in between | `documents.test.ts`, `questions.test.ts` |
+| F12 | The event stream could write after ending | Timers and subscription stop before the response ends; writes check that it has not ended | `events.test.ts` |
+| F13 | Tests that did not prove their names: the lockout test used a proxy setting the app did not have, and the form-encoded test never reached the validator | Rewritten against the real app | `clientAddress.test.ts`, `authSecurity.test.ts` |
+| F14 | Smaller notes: open CORS, unvalidated `PORT` and `OLLAMA_TIMEOUT_MS`, queue positions counting other job types, the poll repeating positions | CORS limited to `CORS_ORIGINS` when set, settings validated at startup, positions count indexing jobs only, the poll sends them only when something changed | `cors.test.ts`, `env.test.ts`, `jobs.test.ts` |
+
+With them, two pending items were done: the graceful shutdown (S7: `closeServerGracefully`, tested in `shutdown.test.ts`) and the health check's limit (S5). Left for later: F10 (a job whose batch makes Ollama drop the connection every time would be retried forever; it is not proven that any input does that) and the least-privilege database user (with Docker).
+
+> [!NOTE]
+> **Decision: an independent, read-only auditor.** The author of the code tends to see what they expected, so the audit ran without the guide's reasoning. Read-only is enforced, not requested: the agent has no tool that writes, edits, runs commands or reaches the network, and the hook denies everything outside its paths. It must never be replaced by a general agent, which has a shell.
+
+> [!NOTE]
+> **Decision: trust only the tunnel's address header.** `TRUSTED_PROXIES` lists the proxies (by default this computer, where cloudflared runs; in Docker, the address cloudflared connects from). Express then takes the right-most address in `X-Forwarded-For` that is not a trusted proxy: the one Cloudflare appended. Never `true`, which would take the left-most entry, written by the client. The API port must be reachable only through the tunnel.
+
+> [!NOTE]
+> **Decision: 60 seconds in total per question, and no answer means no count.** The time limit covers waiting for the model, the embedding and the answer; each step gets only the time left, so a question never reaches Cloudflare's 100-second cut. Normal questions take about a second, about 8 after a model reload, and up to 40 with 20 in line, so the limit only stops abnormal cases. A question still counts when it is accepted (locking the user's row keeps the daily limit exact), but it is given back when no answer came: it waited too long, Ollama was down or too slow, or the browser left. This replaces "counted when accepted, never given back".
+
+> [!NOTE]
+> **Decision: no email verification.** Opening many accounts to take shared capacity (streams, queue) is slowed by the per-address limits, which work now, and will be by Turnstile on registration. Verifying emails would stop it better but needs mail sending; not for the proof of concept.
+
+## 18. Pending work
 
 - **Next step:** deployment and the frontend (step 5 of the brief, below).
 - **Frontend and the event stream:** read it with `fetch()` and the token in the header; open it only while a document is being indexed or a question is waiting, and close it afterwards; reconnect when it drops, after reading `GET /v1/jobs/:id`; ignore a `queued` event that arrives after `started` for the same job (two messages sent at almost the same moment can arrive in that order); with a quick Cloudflare tunnel, which does not support SSE, read `GET /v1/jobs/:id` every 2 or 3 seconds instead.
 - **Models unloaded after 5 idle minutes:** Ollama's default. Reloading both takes about 8 seconds (3 for the embedding model, 5 for the answer model), so the first question after a pause waits that long. A longer `keep_alive` would avoid it, at the cost of keeping 4.6 GB of video memory while the laptop is used for other things; left as it is.
 - **Frontend: the two answer modes:** a short description next to the mode selector: structured abstains more often and invents less (18/20 correct abstentions in RAG1's evaluation), baseline answers more questions (60/80 against 54/80).
 - **Questions in another language (idea):** a Spanish question about an English document finds no chunk above 0.30. The frontend could warn about it, or the brief's idea of answering in the document's language could be explored.
-- **Health rate limit (S5):** `/v1/health` is public and each call queries the database and Ollama. Add a per-address limit before the API is exposed to the internet.
-- **Graceful shutdown (S7):** on `SIGTERM` (for example `docker stop`), stop accepting requests, let the ones in progress finish, stop the worker and close the pool. Jobs already recover after an abrupt stop. Deployment step.
+- **Before exposing the API:** set `TRUSTED_PROXIES` to where cloudflared connects from (if it does not run on the same machine as the API) and `CORS_ORIGINS` to the frontend's address, and make sure the API's port is reachable only through the tunnel. Check the graceful shutdown with `docker stop` once the container exists (Windows cannot send the signal to a local process).
+- **Jobs retried forever (F10, idea):** a job whose batch made Ollama drop the connection every time would go back to the queue every 10 seconds. Count attempts and fail the job after a few, only when Ollama is otherwise reachable.
 - **Model provider interfaces (A6):** only if a second provider appears, such as the cloud model the brief mentions as an idea.
-- **CORS (S8):** `cors()` accepts every origin for now, which is safe while tokens travel in a header (no cookies). Restrict it to the frontend domain when the frontend is deployed.
+- **CORS (S8):** limited to `CORS_ORIGINS` when it is set (any origin otherwise, for development); set it when the frontend is deployed.
 - **Health with the database down:** `checkDatabase` reports `down` when the query fails or the 5-second connection timeout passes, but no automated test covers that case yet.
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.
 - **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `upload_usage` and `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.

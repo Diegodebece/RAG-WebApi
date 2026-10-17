@@ -40,6 +40,18 @@ describe("errorMiddleware", () => {
         assert.deepEqual(Object.keys(response.body), ["message"]);
     });
 
+    it("answers a library error with a 4xx status as a client error, with a generic message when it is not marked safe", async (t) => {
+        const logged = t.mock.method(console, "error", () => {});
+        // what the router passes on when it cannot decode a percent-encoded path parameter
+        const decodeError = Object.assign(new URIError("URI malformed: /internal/path"), { status: 400 });
+
+        const response = await request(buildApp(decodeError)).get("/fail");
+
+        assert.equal(response.status, 400);
+        assert.deepEqual(response.body, { message: "Invalid request" });
+        assert.equal(logged.mock.callCount(), 0, "a client mistake is not logged as a server error");
+    });
+
     it("answers unexpected errors with a generic 500 that does not leak their message", async (t) => {
         const consoleError = t.mock.method(console, "error", () => {});
         const response = await request(buildApp(new Error("password authentication failed for user rag"))).get("/fail");

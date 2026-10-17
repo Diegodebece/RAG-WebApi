@@ -56,6 +56,22 @@ describe("GET /v1/jobs/:id", () => {
         assert.equal((await getJob(ana.auth, first.jobId)).body.data.queuePosition, null);
     });
 
+    it("counts only indexing jobs in the position, like the worker", async () => {
+        const ana = await createTestUser("ana@example.com");
+        const bob = await createTestUser("bob@example.com");
+        const { documentId } = await upload(ana.auth);
+        await pool.query("UPDATE jobs SET status = 'processing', started_at = now()");
+        // a queued job of another type, created earlier: the worker never takes it, so it is ahead of nobody
+        await pool.query(
+            "INSERT INTO jobs (user_id, document_id, type, created_at) VALUES ($1, $2, 'answer_question', now() - interval '1 minute')",
+            [ana.id, documentId]
+        );
+
+        const { jobId } = await upload(bob.auth);
+
+        assert.equal((await getJob(bob.auth, jobId)).body.data.queuePosition, 1);
+    });
+
     it("answers another user's job, an unknown id and a malformed id with the same 404", async () => {
         const ana = await createTestUser("ana@example.com");
         const bob = await createTestUser("bob@example.com");

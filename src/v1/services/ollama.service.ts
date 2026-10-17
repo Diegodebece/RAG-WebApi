@@ -1,15 +1,20 @@
-import { EMBEDDING_DIMENSIONS, OLLAMA_OPTIONS } from "../config/rag.config.js";
+import { ANSWER_MAX_TOKENS, EMBEDDING_DIMENSIONS, OLLAMA_OPTIONS } from "../config/rag.config.js";
 import { ANSWER_MODEL, EMBEDDING_MODEL, OLLAMA_BASE_URL, OLLAMA_TIMEOUT_MS } from "../config/ollama.config.js";
 import { AppError } from "../utils/appError.util.js";
 import { ModelUnavailableError } from "../utils/modelUnavailableError.util.js";
 import { RequestCancelledError } from "../utils/requestCancelledError.util.js";
 import type { ChatMessage } from "../types/answers.type.js";
 
-interface ChatOptions {
-    // "json" makes Ollama return valid JSON (structured mode)
-    format?: "json";
+interface RequestOptions {
     // aborts the request when the caller no longer needs the answer
     signal?: AbortSignal;
+    // gives up earlier than OLLAMA_TIMEOUT_MS, when the caller has less time left
+    timeoutMs?: number;
+}
+
+interface ChatOptions extends RequestOptions {
+    // "json" makes Ollama return valid JSON (structured mode)
+    format?: "json";
 }
 
 const isVector = (value: unknown): value is number[] =>
@@ -21,8 +26,8 @@ const isVector = (value: unknown): value is number[] =>
 // are safe to show: ModelUnavailableError (503) when Ollama cannot be reached (the caller may retry later),
 // 504 when it does not answer in time. A non-OK answer is a plain Error: it means a model or version
 // mismatch that retrying will not fix.
-const postToOllama = async (path: string, body: object, signal?: AbortSignal): Promise<unknown> => {
-    const timeout = AbortSignal.timeout(OLLAMA_TIMEOUT_MS);
+const postToOllama = async (path: string, body: object, { signal, timeoutMs }: RequestOptions = {}): Promise<unknown> => {
+    const timeout = AbortSignal.timeout(Math.min(OLLAMA_TIMEOUT_MS, timeoutMs ?? OLLAMA_TIMEOUT_MS));
 
     try {
         const response = await fetch(`${OLLAMA_BASE_URL}${path}`, {
@@ -57,9 +62,9 @@ const postToOllama = async (path: string, body: object, signal?: AbortSignal): P
 
 // Embeds several texts in one request; the vectors come back in the same order as the texts.
 // A malformed answer is a plain Error, for the same reason as a non-OK one.
-export const embedTextsService = async (texts: string[]): Promise<number[][]> => {
+export const embedTextsService = async (texts: string[], options: RequestOptions = {}): Promise<number[][]> => {
     // truncate: false makes Ollama fail instead of silently embedding only part of a long text
-    const body = await postToOllama("/api/embed", { model: EMBEDDING_MODEL, input: texts, truncate: false });
+    const body = await postToOllama("/api/embed", { model: EMBEDDING_MODEL, input: texts, truncate: false }, options);
     const embeddings = typeof body === "object" && body !== null && "embeddings" in body ? body.embeddings : undefined;
 
     if (!Array.isArray(embeddings) || embeddings.length !== texts.length || !embeddings.every(isVector)) {
@@ -78,16 +83,17 @@ export const loadModelsService = async (): Promise<void> => {
 };
 
 // Asks the answer model and returns its reply, with the options RAG1 was evaluated with (temperature 0,
-// fixed seed, 8,192-token context) and thinking off. The whole reply comes at once (no streaming).
+// fixed seed, 8,192-token context), thinking off and a cap on the answer's length. The whole reply comes at
+// once (no streaming).
 export const chatService = async (messages: ChatMessage[], options: ChatOptions = {}): Promise<string> => {
     const body = await postToOllama("/api/chat", {
         model: ANSWER_MODEL,
         messages,
         stream: false,
         think: false,
-        options: OLLAMA_OPTIONS,
+        options: { ...OLLAMA_OPTIONS, num_predict: ANSWER_MAX_TOKENS },
         ...(options.format ? { format: options.format } : {})
-    }, options.signal);
+    }, options);
     const message = typeof body === "object" && body !== null && "message" in body ? body.message : undefined;
     const content = typeof message === "object" && message !== null && "content" in message ? message.content : undefined;
 

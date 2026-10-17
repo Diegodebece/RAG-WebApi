@@ -7,6 +7,8 @@ import request from "supertest";
 process.env.SECRET_KEY = "test-secret-only-for-these-tests-0123456789";
 process.env.REGISTRATIONS_PER_HOUR = "1000";
 process.env.REGISTRATION_ATTEMPTS_PER_HOUR = "3";
+// the tests connect from this computer; trusting another address makes them a client, not a trusted proxy
+process.env.TRUSTED_PROXIES = "192.0.2.1";
 
 const { app } = await import("../../src/app.js");
 const { pool } = await import("../../src/v1/config/db.config.js");
@@ -28,7 +30,7 @@ describe("registration attempts per address", () => {
         assert.equal((await register()).status, 429);
     });
 
-    it("is not reset by a spoofed X-Forwarded-For header", async () => {
+    it("is not reset by an X-Forwarded-For header from a client that is not a trusted proxy", async () => {
         const response = await request(app)
             .post("/v1/auth/register")
             .set("X-Forwarded-For", "203.0.113.9")

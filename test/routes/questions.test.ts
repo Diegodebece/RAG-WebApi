@@ -71,7 +71,8 @@ process.env.OLLAMA_TIMEOUT_MS = "2000";
 process.env.SECRET_KEY = "test-secret-only-for-these-tests-0123456789";
 process.env.MAX_QUESTIONS_PER_DAY = "3";
 process.env.QUESTIONS_PER_MINUTE = "1000";
-process.env.MAX_QUESTION_WAIT_SECONDS = "1";
+process.env.MAX_QUESTION_SECONDS = "2";
+process.env.MAX_WAITING_QUESTIONS = "3";
 
 const { app } = await import("../../src/app.js");
 const { pool } = await import("../../src/v1/config/db.config.js");
@@ -80,6 +81,10 @@ const { createTestUser } = await import("./testUsers.js");
 const { processQueuedJobsService } = await import("../../src/v1/services/jobQueue.service.js");
 const { INSUFFICIENT_EVIDENCE_ANSWERS } = await import("../../src/v1/utils/prompts.util.js");
 const { loadModelsService } = await import("../../src/v1/services/ollama.service.js");
+const { runWithModelTurnService } = await import("../../src/v1/services/modelTurn.service.js");
+
+// holds the turn with the model for ms, as a long indexing batch or another answer would
+const holdModelTurn = (ms: number) => runWithModelTurnService(() => sleep(ms));
 
 type Auth = [string, string];
 
@@ -186,7 +191,8 @@ describe("POST /v1/documents/:id/ask: answers", () => {
         assert.equal(chat.body.stream, false);
         assert.equal(chat.body.think, false);
         assert.equal(chat.body.format, undefined);
-        assert.deepEqual(chat.body.options, { temperature: 0, seed: 42, num_ctx: 8192 });
+        // the evaluated options, plus a cap on the answer's length
+        assert.deepEqual(chat.body.options, { temperature: 0, seed: 42, num_ctx: 8192, num_predict: 1024 });
 
         const [system, user] = chat.body.messages ?? [];
         assert.ok(system.content.startsWith("Answer the user's question briefly in English."));
@@ -391,6 +397,7 @@ describe("POST /v1/documents/:id/ask: when Ollama fails", () => {
 
         assert.equal(response.status, 503);
         assert.deepEqual(response.body, { message: "The model server is not available" });
+        assert.equal(await countQuestions(ana.id), 0, "a question without an answer goes back to the daily limit");
     });
 
     it("answers 504 when Ollama does not answer in time", async () => {
@@ -401,8 +408,27 @@ describe("POST /v1/documents/:id/ask: when Ollama fails", () => {
 
         assert.equal(response.status, 504);
         assert.deepEqual(response.body, { message: "The model server did not answer in time" });
+        assert.equal(await countQuestions(ana.id), 0, "a question without an answer goes back to the daily limit");
         // let the fake finish its slow answer, so it does not overlap the next test
         await sleep(400);
+    });
+
+    it("stops at the question's total time, even while the model is still answering", async () => {
+        const ana = await createTestUser("ana@example.com");
+        const documentId = await createDocument(ana.id);
+        chatDelayMs = 1500;
+        chatReply = "Answer [F1].";
+        const holding = holdModelTurn(1000);
+        const started = Date.now();
+
+        // a second in line, then a 1.5-second answer: past the 2 seconds a question may take in total
+        const response = await ask(ana.auth, documentId);
+
+        assert.equal(response.status, 504);
+        assert.ok(Date.now() - started < 2400, `answered after ${Date.now() - started} ms`);
+        assert.equal(await countQuestions(ana.id), 0);
+        await holding;
+        await sleep(800);
     });
 
     it("answers a generic 500 when Ollama returns no text", async (t) => {
@@ -461,20 +487,31 @@ describe("POST /v1/documents/:id/ask: the turn with the model", () => {
         assert.equal(await countQuestions(ana.id), 1, "the refused question is not counted");
     });
 
-    it("gives up with a 503 when the turn does not come within the maximum wait", async () => {
-        chatDelayMs = 1300;
-        chatReply = "Answer [F1].";
-        const ana = await createTestUser("ana@example.com");
+    it("gives up with a 503, and gives the question back, when the turn does not come in time", async () => {
         const bob = await createTestUser("bob@example.com");
+        const documentId = await createDocument(bob.id);
+        const holding = holdModelTurn(2500);
 
-        const first = ask(ana.auth, await createDocument(ana.id)).then((response) => response);
-        await sleep(50);
-        const late = await ask(bob.auth, await createDocument(bob.id));
+        const late = await ask(bob.auth, documentId);
 
         assert.equal(late.status, 503);
         assert.deepEqual(late.body, { message: "The server is busy, please try again in a few minutes" });
-        assert.equal((await first).status, 200);
-        assert.equal(embedRequests().length, 1, "the late question never reached the model");
+        assert.equal(embedRequests().length, 0, "the late question never reached the model");
+        assert.equal(await countQuestions(bob.id), 0);
+        await holding;
+    });
+
+    it("never lets more questions wait than the limit, even when they arrive together", async () => {
+        chatReply = "Answer [F1].";
+        const users = await Promise.all(["a", "b", "c", "d", "e"].map((name) => createTestUser(`${name}@example.com`)));
+        const documents = await Promise.all(users.map((user) => createDocument(user.id)));
+        const holding = holdModelTurn(300);
+
+        const responses = await Promise.all(users.map((user, index) => ask(user.auth, documents[index])));
+        await holding;
+
+        // three may wait for the model (MAX_WAITING_QUESTIONS); the others are told at once that it is busy
+        assert.deepEqual(responses.map((response) => response.status).sort(), [200, 200, 200, 503, 503]);
     });
 
     it("drops a question whose browser disconnected while it waited", async () => {
@@ -492,6 +529,7 @@ describe("POST /v1/documents/:id/ask: the turn with the model", () => {
         await sleep(100);
         assert.equal(embedRequests().length, 1, "Bob's question left the line");
         assert.equal(chatRequests().length, 1);
+        assert.equal(await countQuestions(bob.id), 0, "and went back to his daily limit");
     });
 
     it("lets a question in between the batches of a document being indexed", async () => {

@@ -2,6 +2,9 @@ import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 
+// these tests change the dependencies' state between requests, so every request checks again
+process.env.HEALTH_CACHE_SECONDS = "0";
+
 // Points the app at a port where nothing listens, so the database check fails right away.
 // Set before the app is imported; this file runs in its own process.
 process.env.DATABASE_URL = "postgres://rag:wrong@127.0.0.1:1/nowhere";

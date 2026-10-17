@@ -22,6 +22,15 @@ pool.on("error", (error) => {
 // COMMIT when the callback resolves, ROLLBACK when it throws (and the error is rethrown).
 export const withTransaction = async <T>(callback: (client: PoolClient) => Promise<T>): Promise<T> => {
     const client = await pool.connect();
+    // A connection lent by the pool has no "error" listener of its own: if it broke during the transaction
+    // (PostgreSQL restarting, for example), the unhandled event would crash the process. The query that was
+    // running fails anyway, and that failure is what the caller gets.
+    let broken = false;
+    const onError = (error: Error): void => {
+        broken = true;
+        console.error("A PostgreSQL connection broke during a transaction", error);
+    };
+    client.on("error", onError);
 
     try {
         await client.query("BEGIN");
@@ -29,9 +38,17 @@ export const withTransaction = async <T>(callback: (client: PoolClient) => Promi
         await client.query("COMMIT");
         return result;
     } catch (error) {
-        await client.query("ROLLBACK");
+        try {
+            await client.query("ROLLBACK");
+        } catch (rollbackError) {
+            // the original error says what went wrong; a failed ROLLBACK must not replace it
+            broken = true;
+            console.error("Could not roll back a transaction", rollbackError);
+        }
         throw error;
     } finally {
-        client.release();
+        client.off("error", onError);
+        // a broken connection is closed instead of going back to the pool
+        client.release(broken);
     }
 };

@@ -1,4 +1,4 @@
-import { pool, withTransaction } from "../config/db.config.js";
+import { LOCK_KEYS, pool, withTransaction } from "../config/db.config.js";
 import {
     DAILY_LIMIT_WINDOW_HOURS,
     DOCUMENT_LIFETIME_HOURS,
@@ -11,6 +11,7 @@ import { chunkText } from "../utils/chunkText.util.js";
 import { sanitizeText } from "../utils/sanitizeText.util.js";
 import { isUuid } from "../utils/uuid.util.js";
 import { notifyJobQueuedService } from "./jobQueue.service.js";
+import type { Pool, PoolClient } from "pg";
 import type { CreatedDocument, Document } from "../types/documents.type.js";
 import type { CreateDocumentInput } from "../validators/documents.validator.js";
 
@@ -27,9 +28,55 @@ const withExpiry = (row: DocumentRow): Document => ({
     expiresAt: new Date(row.createdAt.getTime() + DOCUMENT_LIFETIME_HOURS * HOUR_MS)
 });
 
+interface UploadUsage {
+    documents: number;
+    uploadsToday: number;
+    activeJobs: number;
+    queuedJobs: number;
+}
+
+// what counts against an upload: the user's documents, uploads today and indexing jobs, and the whole queue
+const readUploadUsage = async (db: Pool | PoolClient, userId: string): Promise<UploadUsage> => {
+    const { rows: [usage] } = await db.query<UploadUsage>(
+        `SELECT
+             (SELECT count(*)::int FROM documents WHERE user_id = $1) AS documents,
+             (SELECT count(*)::int FROM upload_usage
+              WHERE user_id = $1 AND uploaded_at > now() - make_interval(hours => $2)) AS "uploadsToday",
+             (SELECT count(*)::int FROM jobs
+              WHERE user_id = $1 AND type = 'index_document' AND status IN ('queued', 'processing')) AS "activeJobs",
+             (SELECT count(*)::int FROM jobs WHERE status IN ('queued', 'processing')) AS "queuedJobs"`,
+        [userId, DAILY_LIMIT_WINDOW_HOURS]
+    );
+    return usage;
+};
+
+const checkUploadLimits = (usage: UploadUsage): void => {
+    if (usage.documents >= MAX_DOCUMENTS_PER_USER) {
+        throw new AppError(409, `Document limit reached (${MAX_DOCUMENTS_PER_USER}): delete a document to upload another`);
+    }
+
+    if (usage.activeJobs > 0) {
+        throw new AppError(409, "Another of your documents is still being indexed; try again when it finishes");
+    }
+
+    // a rolling 24-hour window: deleting a document does not give an upload back, so uploading and
+    // deleting in a loop cannot keep Ollama busy
+    if (usage.uploadsToday >= MAX_UPLOADS_PER_DAY) {
+        throw new AppError(429, `Daily upload limit reached (${MAX_UPLOADS_PER_DAY}): try again tomorrow`);
+    }
+
+    if (usage.queuedJobs >= MAX_QUEUED_JOBS) {
+        throw new AppError(503, "The server is busy, please try again in a few minutes");
+    }
+};
+
 // Stores the cleaned text as chunks without embeddings, plus the job that will compute them. The original
 // text is never stored. Responds before indexing, which runs in the background.
 export const createDocumentService = async (userId: string, documentData: CreateDocumentInput): Promise<CreatedDocument> => {
+    // A quick look without locks before cleaning and chunking up to 200,000 characters: a user already over a
+    // limit is turned away without that work. The same checks run again under the locks below, which makes them exact.
+    checkUploadLimits(await readUploadUsage(pool, userId));
+
     const text = sanitizeText(documentData.text);
 
     if (text === "") {
@@ -47,34 +94,12 @@ export const createDocumentService = async (userId: string, documentData: Create
             throw new AppError(404, "User not found");
         }
 
-        const { rows: [usage] } = await client.query<{ documents: number; uploadsToday: number; activeJobs: number; queuedJobs: number }>(
-            `SELECT
-                 (SELECT count(*)::int FROM documents WHERE user_id = $1) AS documents,
-                 (SELECT count(*)::int FROM upload_usage
-                  WHERE user_id = $1 AND uploaded_at > now() - make_interval(hours => $2)) AS "uploadsToday",
-                 (SELECT count(*)::int FROM jobs
-                  WHERE user_id = $1 AND type = 'index_document' AND status IN ('queued', 'processing')) AS "activeJobs",
-                 (SELECT count(*)::int FROM jobs WHERE status IN ('queued', 'processing')) AS "queuedJobs"`,
-            [userId, DAILY_LIMIT_WINDOW_HOURS]
-        );
+        // The user's row lock serializes one user's uploads; uploads of different users could still all read
+        // 19 queued jobs at once and all insert. One shared lock for the queue check makes it exact. Uploads are
+        // rare and these transactions short, so waiting for it costs nothing noticeable.
+        await client.query("SELECT pg_advisory_xact_lock($1)", [LOCK_KEYS.indexingQueue]);
 
-        if (usage.documents >= MAX_DOCUMENTS_PER_USER) {
-            throw new AppError(409, `Document limit reached (${MAX_DOCUMENTS_PER_USER}): delete a document to upload another`);
-        }
-
-        if (usage.activeJobs > 0) {
-            throw new AppError(409, "Another of your documents is still being indexed; try again when it finishes");
-        }
-
-        // a rolling 24-hour window: deleting a document does not give an upload back, so uploading and
-        // deleting in a loop cannot keep Ollama busy
-        if (usage.uploadsToday >= MAX_UPLOADS_PER_DAY) {
-            throw new AppError(429, `Daily upload limit reached (${MAX_UPLOADS_PER_DAY}): try again tomorrow`);
-        }
-
-        if (usage.queuedJobs >= MAX_QUEUED_JOBS) {
-            throw new AppError(503, "The server is busy, please try again in a few minutes");
-        }
+        checkUploadLimits(await readUploadUsage(client, userId));
 
         const { rows: [row] } = await client.query<DocumentRow>(
             `INSERT INTO documents (user_id, filename, chunk_count) VALUES ($1, $2, $3) RETURNING ${DOCUMENT_COLUMNS}`,

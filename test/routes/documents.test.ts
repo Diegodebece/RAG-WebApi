@@ -5,6 +5,8 @@ import request from "supertest";
 process.env.SECRET_KEY = "test-secret-only-for-these-tests-0123456789";
 process.env.MAX_DOCUMENTS_PER_USER = "3";
 process.env.MAX_UPLOADS_PER_DAY = "3";
+// the per-minute limit has its own test file
+process.env.UPLOAD_REQUESTS_PER_MINUTE = "1000";
 process.env.MAX_DOCUMENT_CHARS = "200000";
 process.env.MAX_QUEUED_JOBS = "3";
 
@@ -13,6 +15,7 @@ const { pool } = await import("../../src/v1/config/db.config.js");
 const { resetTestDatabase } = await import("../db/testDatabase.js");
 const { createTestUser } = await import("./testUsers.js");
 const { chunkText } = await import("../../src/v1/utils/chunkText.util.js");
+const { LOCK_KEYS } = await import("../../src/v1/config/db.config.js");
 
 type Auth = [string, string];
 
@@ -245,6 +248,51 @@ describe("POST /v1/documents", () => {
         }
     });
 
+    it("turns away a user over the daily limit before taking any lock or chunking the text", async () => {
+        const ana = await createTestUser("ana@example.com");
+        await pool.query("INSERT INTO upload_usage (user_id) SELECT $1 FROM generate_series(1, 3)", [ana.id]);
+        const client = await pool.connect();
+
+        try {
+            // with the user's row locked, an upload that reached the locked checks would have to wait
+            await client.query("BEGIN");
+            await client.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [ana.id]);
+
+            const response = await Promise.race([upload(ana.auth), new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000))]);
+
+            assert.equal(response?.status, 429, "answered at once, without waiting for the lock");
+        } finally {
+            await client.query("ROLLBACK");
+            client.release();
+        }
+    });
+
+    it("checks the queue length of all users under one shared lock", async () => {
+        // Holding the queue lock by hand shows that an upload waits for it: without it, uploads of different
+        // users could all read the same queue length and all go past the limit.
+        const bob = await createTestUser("bob@example.com");
+        const client = await pool.connect();
+        let finished = false;
+
+        try {
+            await client.query("SELECT pg_advisory_lock($1)", [LOCK_KEYS.indexingQueue]);
+
+            const pending = (async () => {
+                const response = await upload(bob.auth);
+                finished = true;
+                return response;
+            })();
+
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            assert.equal(finished, false, "the upload must wait while the queue lock is held");
+
+            await client.query("SELECT pg_advisory_unlock($1)", [LOCK_KEYS.indexingQueue]);
+            assert.equal((await pending).status, 202);
+        } finally {
+            client.release();
+        }
+    });
+
     it("answers 503 when the job queue is full", async () => {
         for (const email of ["a@example.com", "b@example.com", "c@example.com"]) {
             assert.equal((await upload((await createTestUser(email)).auth)).status, 202);
@@ -336,6 +384,18 @@ describe("reading and deleting documents", () => {
         assert.equal(response.status, 404);
         const { rows } = await pool.query("SELECT count(*)::int AS count FROM documents");
         assert.equal(rows[0].count, 1);
+    });
+
+    it("answers an id with broken percent-encoding with a 400, not a 500", async (t) => {
+        const logged = t.mock.method(console, "error", () => {});
+        const ana = await createTestUser("ana@example.com");
+
+        for (const [method, path] of [["get", "/v1/documents/%E0%A4%A"], ["delete", "/v1/documents/%ZZ"], ["post", "/v1/documents/%E0%A4%A/ask"], ["get", "/v1/jobs/%ZZ"]] as const) {
+            const response = await request(app)[method](path).set(...ana.auth);
+            assert.equal(response.status, 400, `${method} ${path}`);
+        }
+
+        assert.equal(logged.mock.callCount(), 0);
     });
 
     it("answers a malformed id on delete with a 404", async () => {
