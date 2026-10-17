@@ -43,8 +43,26 @@ export const MAX_DOCUMENTS_PER_USER = readPositiveInteger("MAX_DOCUMENTS_PER_USE
 // accepted uploads per user in the last 24 hours; deleting a document does not give an upload back
 export const MAX_UPLOADS_PER_DAY = readPositiveInteger("MAX_UPLOADS_PER_DAY", 3);
 
-// the rolling window of the daily limits (uploads now, questions later)
+// the rolling window of the daily limits (uploads and questions)
 export const DAILY_LIMIT_WINDOW_HOURS = 24;
+
+// questions per user per minute, counted in memory by rateLimitMiddleware
+export const QUESTIONS_PER_MINUTE = readPositiveInteger("QUESTIONS_PER_MINUTE", 10);
+
+export const QUESTION_WINDOW_MS = MINUTE_MS;
+
+// accepted questions per user in the last 24 hours
+export const MAX_QUESTIONS_PER_DAY = readPositiveInteger("MAX_QUESTIONS_PER_DAY", 30);
+
+// a question is embedded and sent to the model whole
+export const MAX_QUESTION_CHARS = 1000;
+
+// How long a question may wait for its turn with the model before the API gives up with a 503. It stays
+// well under the 100 seconds after which Cloudflare cuts a response.
+export const MAX_QUESTION_WAIT_SECONDS = readPositiveInteger("MAX_QUESTION_WAIT_SECONDS", 60);
+
+// questions of all users waiting for the model at the same time; more get a 503 right away
+export const MAX_WAITING_QUESTIONS = readPositiveInteger("MAX_WAITING_QUESTIONS", 20);
 
 // about 60 Word pages; checked on the text the browser sends, before it is cleaned
 export const MAX_DOCUMENT_CHARS = readPositiveInteger("MAX_DOCUMENT_CHARS", 200000);

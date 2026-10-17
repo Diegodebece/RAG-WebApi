@@ -62,6 +62,7 @@ The template assumes PostgreSQL with `pg` and the `pool` / `withTransaction` fro
 - Use `RETURNING <columns>` to get the created, updated or deleted row in the same query; an empty result means nothing matched, which is the 404 case.
 - `pg` returns `bigint` (including `count(*)`) and `numeric` as strings. Cast in SQL (`count(*)::int`, `price::float8`) or convert with `Number(...)`.
 - Several writes that must succeed or fail together go inside `withTransaction(async (client) => { ... })`, using `client.query`, not `pool.query`.
+- Never keep a transaction open while calling an external service (a model, another API): finish the transaction first, then make the call. A slow call would hold the connection and its row locks.
 - Check uniqueness before inserting, and also translate the database's unique violation (`isUniqueViolation(error)`, code `23505`) into the same `AppError(409)`, since two requests can pass the check at the same time.
 - Compare case-insensitive values (emails, names) as `lower(column) = lower($1)`, matching the unique index on `lower(column)`.
 

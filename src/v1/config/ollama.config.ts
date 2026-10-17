@@ -5,3 +5,6 @@ export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:
 export const ANSWER_MODEL = "qwen3.5:4b";
 
 export const EMBEDDING_MODEL = "qwen3-embedding:0.6b";
+
+// Longest wait for one Ollama request; RAG1 used the same limit. Tests lower it to try the 504.
+export const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS) || 120_000;

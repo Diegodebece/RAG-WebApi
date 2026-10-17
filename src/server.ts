@@ -4,6 +4,9 @@ import { CLEANUP_INTERVAL_MS } from "./v1/config/limits.config.js";
 import { deleteExpiredDataService } from "./v1/services/cleanup.service.js";
 import { subscribeToJobEvents } from "./v1/services/jobEvents.service.js";
 import { recoverJobsService, startJobWorkerService } from "./v1/services/jobQueue.service.js";
+import { runWithModelTurnService } from "./v1/services/modelTurn.service.js";
+import { loadModelsService } from "./v1/services/ollama.service.js";
+import { ModelUnavailableError } from "./v1/utils/modelUnavailableError.util.js";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -40,6 +43,24 @@ subscribeToJobEvents((event) => {
 });
 
 // Jobs interrupted by the last shutdown go back to the queue before the worker starts.
+// Right after the laptop boots, Ollama needs over a minute to load the answer model the first time; loading
+// both models when the API starts means nobody waits for that. It takes the turn with the model like any
+// other request. If Ollama is not running yet, the first request loads the models instead.
+const loadModels = async (): Promise<void> => {
+    const started = Date.now();
+
+    try {
+        await runWithModelTurnService(loadModelsService);
+        console.log(`Models loaded in ${Math.round((Date.now() - started) / 1000)} s`);
+    } catch (error) {
+        if (error instanceof ModelUnavailableError) {
+            console.log("Ollama is not running yet; the models will load with the first request");
+        } else {
+            console.error("Could not load the models", error);
+        }
+    }
+};
+
 const startBackgroundWork = async (): Promise<void> => {
     try {
         const recovered = await recoverJobsService();
@@ -51,6 +72,8 @@ const startBackgroundWork = async (): Promise<void> => {
         console.error("Could not recover interrupted jobs", error);
     }
 
+    // before the worker, so the models are loaded before a resumed job needs them
+    void loadModels();
     startJobWorkerService();
     void runCleanup();
     setInterval(() => void runCleanup(), CLEANUP_INTERVAL_MS);

@@ -64,11 +64,12 @@ All paths start with `/v1`. Protected endpoints need the header `Authorization: 
 | `GET /health` | Public | `status` is `ok`, `degraded` (Ollama down) or `down` (database down) |
 | `POST /auth/register` | Public | Creates an account from `{ email, password }` and returns it with a token |
 | `POST /auth/login` | Public | Returns the account and a token valid for 1 hour |
-| `GET /users/me` | Protected | Returns the account of the token's owner and its usage: documents stored and uploads in the last 24 hours, each with its limit |
+| `GET /users/me` | Protected | Returns the account of the token's owner and its usage: documents stored, and uploads and questions in the last 24 hours, each with its limit |
 | `POST /documents` | Protected | Stores `{ filename, text }` (up to 200,000 characters) and queues its indexing; answers `202` with the document and a `jobId`. Each user can keep 3 documents and upload 3 per day (`429` after that, deleted documents included) |
 | `GET /documents` | Protected | Lists your documents, newest first |
 | `GET /documents/:id` | Protected | Returns one of your documents |
 | `DELETE /documents/:id` | Protected | Deletes one of your documents |
+| `POST /documents/:id/ask` | Protected | Answers `{ question, mode?, language? }` about one of your ready documents with `{ status, answer, citations, sources, timings }`. `mode` is `baseline` (default) or `structured`, `language` `en` (default) or `es`. 10 questions per minute and 30 per day; the answer comes in the response, after waiting at most 60 seconds for the model |
 | `GET /jobs/:id` | Protected | Returns a job's status, its position in the queue and its progress (chunks embedded out of the total) |
 
 Successful responses look like `{ success: true, message, data }`; errors look like `{ message }`, with `details` for validation errors.
