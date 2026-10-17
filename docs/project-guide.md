@@ -12,9 +12,10 @@ Contents:
 6. [Domain layer](#6-domain-layer)
 7. [Database layer](#7-database-layer)
 8. [Middleware layer](#8-middleware-layer)
-9. [Local environment](#9-local-environment)
-10. [Agreed limits](#10-agreed-limits)
-11. [Pending work](#11-pending-work)
+9. [Authentication layer](#9-authentication-layer)
+10. [Local environment](#10-local-environment)
+11. [Agreed limits](#11-agreed-limits)
+12. [Pending work](#12-pending-work)
 
 ## 1. Origin and goal
 
@@ -322,9 +323,47 @@ The limits come from `src/v1/config/limits.config.ts`, which reads them from `.e
 > [!NOTE]
 > **Decision: failed logins counted per email, not only per address.** An attacker can spread password guesses over many addresses, so failed logins are also counted per email (`onlyFailures: true`, successful logins do not count). The email is trimmed and lowercased, so `Ana@x.com` and `ana@x.com` share a counter.
 
-## 9. Local environment
+## 9. Authentication layer
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#11-pending-work)).
+The first endpoints. `src/app.ts` builds the app (CORS, JSON body parsing, the `/v1` routes, then the 404 and error handlers) and `src/server.ts` starts it; `npm run dev` runs it from the sources.
+
+| Endpoint | Access | Files |
+|---|---|---|
+| `GET /v1/health` | Public | `health.routes.ts`, `health.controller.ts`, `health.service.ts` |
+| `POST /v1/auth/register`, `POST /v1/auth/login` | Public | `auth.routes.ts`, `auth.validator.ts`, `auth.controller.ts`, `auth.service.ts` |
+| `GET /v1/users/me` | Protected | `users.routes.ts`, `users.controller.ts`, `users.service.ts` |
+
+`v1.routes.ts` mounts the public routers first, then `authenticateMiddleware`, then the protected ones. Everything after that line needs a token, including paths that do not exist: without a token an unknown `/v1` path answers 401, with one it answers 404, so anonymous clients learn nothing about which routes exist.
+
+Registering trims and lowercases the email, rejects one that is already taken (409), hashes the password and returns the new user with a token. Logging in looks the user up by email, verifies the password and returns the user with a token. The token carries `{ id, role }`, is signed with `SECRET_KEY` using HS256 and expires after 1 hour. Tests in `test/routes/` call the real app with `supertest` against the test database; `health.test.ts` uses a fake Ollama so it does not depend on the real one.
+
+> [!NOTE]
+> **Decision: scrypt hashes that carry their own parameters.** Passwords are hashed with Node's built-in `crypto.scrypt` (as the brief proposed), with a random 16-byte salt, and stored as `scrypt$N$r$p$salt$hash`. Because the cost parameters travel with each hash, they can be raised later without breaking existing passwords. Verification uses `timingSafeEqual`, which takes the same time whichever byte differs.
+
+> [!NOTE]
+> **Decision: passwords of 8 to 64 characters, with no character rules.** Following current NIST guidance, length protects more than forced symbols or capitals. 64 is the minimum maximum NIST recommends and fits passphrases and password managers; 32 was considered but would reject long passphrases. Passwords are not trimmed, because spaces are valid characters.
+
+> [!NOTE]
+> **Decision: login does not reveal which emails exist.** A wrong password and an unknown email get the same 401 "Invalid email or password". For an unknown email the service still verifies the password against a dummy hash, so both cases take about the same time. Registration does reveal a taken email (409), which cannot be avoided without email verification; the registration limit slows down anyone probing for accounts.
+
+> [!NOTE]
+> **Decision: count only successful registrations.** The limit of 3 registrations per address per hour counts accounts actually created (`onlySuccesses`), so a typo or a taken email does not use up an attempt, while mass account creation is still blocked. Logins count every attempt per address, and failed attempts per email.
+
+> [!NOTE]
+> **Decision: `GET /v1/users/me` instead of the brief's `GET /me`.** The route skill places custom actions under their resource. It returns the account now; quota usage will be added with the documents and questions layers.
+
+> [!NOTE]
+> **Decision: the health check always answers 200 when the API is up.** It reports `status` (`ok`, `degraded` when Ollama is down or a model is missing, `down` when the database does not answer) plus the state of each dependency, and nothing else, since it is public. The plan said 503 when the database is down, but the skills reserve 5xx responses for unexpected errors handled by `errorMiddleware`; a report with a status field keeps the rule and is just as easy for the frontend. "The server is offline" is detected by the frontend itself: no answer, or Cloudflare's error page, means the computer is off or disconnected.
+
+> [!NOTE]
+> **Decision: the API listens on 127.0.0.1 by default.** `app.listen(port)` without an address accepts connections from the whole local network. `server.ts` binds to `HOST`, which defaults to `127.0.0.1`; inside Docker it will be `0.0.0.0`, behind the hardened container. Checked by calling the API from the computer's LAN address, which gets no answer.
+
+> [!NOTE]
+> **Decision: a connection timeout on the pool.** Without `connectionTimeoutMillis`, a query waits forever when PostgreSQL is down, which would make the health check hang instead of reporting the database as down. The pool now gives up after 5 seconds; the skill template has the same setting.
+
+## 10. Local environment
+
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#12-pending-work)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -332,7 +371,7 @@ During development only PostgreSQL runs in Docker; the API runs on the host with
 > [!NOTE]
 > **Decision: user name `rag`.** A user name is not a secret, so a complex one adds little; access is protected by the network exposure and a long random password. The default `postgres` user is avoided because it is the first one bots try. The real hardening is two users in deployment (see below).
 
-## 10. Agreed limits
+## 11. Agreed limits
 
 These values will become `.env` settings when the endpoints that enforce them are built.
 
@@ -352,10 +391,12 @@ These values will become `.env` settings when the endpoints that enforce them ar
 > [!NOTE]
 > **Decision: stricter limits than the brief's examples.** Registration is limited to 3 per IP per hour (shared networks such as universities still work) and documents are deleted after 24 hours instead of 7 days. Behind Cloudflare the API must read the real client IP from `CF-Connecting-IP`, trusted only for requests that come through the tunnel; otherwise every request would look like the tunnel's and share one limit.
 
-## 11. Pending work
+## 12. Pending work
 
 - **Malformed ids:** an id that is not even a UUID (`/documents/abc`) makes PostgreSQL fail with code `22P02`, which would become a 500. To be solved in the route layer, probably as a 404.
-- **Next layer:** authentication (register, login, `GET /me`) with `crypto.scrypt`, JWT and the IP rate limits.
+- **Next layer:** documents (upload, list, delete) with the persisted indexing queue.
+- **CORS:** `cors()` accepts every origin for now, which is safe while tokens travel in a header (no cookies). Restrict it to the frontend domain when the frontend is deployed.
+- **Health with the database down:** `checkDatabase` reports `down` when the query fails or the 5-second connection timeout passes, but no automated test covers that case yet.
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.
 - **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.
 - **Tiny last chunks (idea):** the last chunk of a document can be very short and match questions unreliably; merging it into the previous chunk when it is under about 200 characters would avoid that.
