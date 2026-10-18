@@ -2,7 +2,13 @@
 
 Self-hosted RAG API: upload a document, ask questions about it, get answers that cite the passages they come from. Built with Express and TypeScript, PostgreSQL with pgvector, Docker, and local Ollama models, so it runs for free on one laptop.
 
-> **Status:** work in progress. Accounts, the health check and documents work: uploads are indexed in the background with Ollama, with progress you can poll. Asking questions is next. See [docs/project-guide.md](docs/project-guide.md) for how everything works and why it was built this way.
+## About this project
+
+This project has two goals for me. The first is to learn to work with Claude Code and its tools: directing the development and auditing the result instead of writing every line myself. The second is to learn, along the way, how Docker, Cloudflare and the other technologies used here work.
+
+I built it with Claude Code's skills, subagents and hooks. The skills describe the layered architecture of earlier projects I wrote on my own or with classmates at university, and I tried to reproduce that architecture here, discussing with Claude how each part should work before any code was written. Then independent agents, with no prior context about the project, audited it to find bugs and vulnerabilities.
+
+> **Status:** the API is complete and deployed: accounts, documents indexed in the background, questions with cited answers, live events, and a Docker setup published through a Cloudflare Tunnel. The frontend is next. See [docs/project-guide.md](docs/project-guide.md) for how everything works and why it was built this way.
 
 It turns the command-line app from [RAG-learning](https://github.com/Diegodebece/RAG-learning) (RAG1) into a web service, reusing its retrieval and answer pipelines and the settings measured in its evaluation.
 
@@ -14,7 +20,7 @@ It turns the command-line app from [RAG-learning](https://github.com/Diegodebece
 ## Requirements
 
 - Node.js 22.18 or later
-- Docker Desktop (runs PostgreSQL 17 with pgvector)
+- Docker Desktop (runs PostgreSQL 17 with pgvector; in deployment, the API and the tunnel too)
 - Ollama with `qwen3.5:4b` and `qwen3-embedding:0.6b`
 
 ## Setup
@@ -34,7 +40,7 @@ It turns the command-line app from [RAG-learning](https://github.com/Diegodebece
 3. Start PostgreSQL. It listens on `127.0.0.1:5432` only, and its data lives in a Docker volume:
 
    ```bash
-   docker compose up -d
+   docker compose up -d db
    ```
 
 4. Create the test database, once (the tests empty it on every run):
@@ -54,6 +60,44 @@ It turns the command-line app from [RAG-learning](https://github.com/Diegodebece
    ```bash
    npm run dev
    ```
+
+## Deployment with Docker
+
+In deployment the API runs in Docker next to PostgreSQL, and a Cloudflare Tunnel publishes it on a subdomain without opening any port. Ollama keeps running on the host. The guide's [Deployment](docs/project-guide.md#14-deployment) section explains every choice.
+
+1. In `.env`, besides the values from the setup above, set `APP_DB_PASSWORD` (another random value) and `CLOUDFLARE_TUNNEL_TOKEN`. To get the token, create a tunnel in the Cloudflare dashboard (Networking, Tunnels), choose Docker, and copy only what follows `--token` in the command it shows. Then add a published application route from your subdomain to `http://api:3000`.
+
+2. Start the database and create the API's database user, which can only read and change rows:
+
+   ```bash
+   docker compose up -d db
+   ```
+
+   ```bash
+   Get-Content scripts\create-app-role.sql | docker compose exec -T db psql -U rag -d rag -v ON_ERROR_STOP=1
+   ```
+
+   (in bash: `docker compose exec -T db psql -U rag -d rag -v ON_ERROR_STOP=1 < scripts/create-app-role.sql`)
+
+3. Set its password to the value of `APP_DB_PASSWORD`: open `psql` with `docker compose exec db psql -U rag -d rag`, run `\password rag_app`, then `\q`.
+
+4. Build the image, apply the migrations as the owner, and start everything:
+
+   ```bash
+   docker compose build api
+   ```
+
+   ```bash
+   docker compose run --rm migrate
+   ```
+
+   ```bash
+   docker compose up -d
+   ```
+
+5. Check it: `docker compose logs api` should show "Models loaded", `docker compose logs cloudflared` four "Registered tunnel connection" lines, and `https://<your subdomain>/v1/health` a status of `ok`.
+
+After changing the code: `docker compose build api`, `docker compose run --rm migrate`, `docker compose up -d api`.
 
 ## Endpoints
 
@@ -91,7 +135,8 @@ Successful responses look like `{ success: true, message, data }`; errors look l
 ```
 src/
 ├── app.ts                builds the Express app
-├── server.ts             starts it (npm run dev / npm start)
+├── server.ts             starts it (npm run dev / npm start) and shuts it down gracefully
+├── shutdown.ts           closes the server without cutting requests in progress
 ├── migrate.ts            migration runner (npm run migrate)
 └── v1/
     ├── v1.routes.ts      mounts the public and protected routes
@@ -104,6 +149,9 @@ src/
     ├── types/            shared TypeScript types
     └── utils/            pure helpers: RAG logic, passwords, tokens, errors
 migrations/               numbered SQL files, applied in order
+scripts/                  one-off database setup (the API's database user)
+Dockerfile                the API's image, built in two stages
+docker-compose.yml        db, api, cloudflared, and migrate on demand
 test/
 ├── setup.ts              points the tests at the test database
 ├── db/                   schema and migration tests

@@ -17,11 +17,12 @@ Contents:
 11. [Questions layer](#11-questions-layer)
 12. [Live events layer](#12-live-events-layer)
 13. [Local environment](#13-local-environment)
-14. [Agreed limits](#14-agreed-limits)
-15. [Security review](#15-security-review)
-16. [Second review: security and architecture](#16-second-review-security-and-architecture)
-17. [Third review: independent audit](#17-third-review-independent-audit)
-18. [Pending work](#18-pending-work)
+14. [Deployment](#14-deployment)
+15. [Agreed limits](#15-agreed-limits)
+16. [Security review](#16-security-review)
+17. [Second review: security and architecture](#17-second-review-security-and-architecture)
+18. [Third review: independent audit](#18-third-review-independent-audit)
+19. [Pending work](#19-pending-work)
 
 ## 1. Origin and goal
 
@@ -72,7 +73,7 @@ The work goes layer by layer. Each layer is planned and discussed first, then wr
 > **Originally:** Claude Code may use local git (status, diff, log), but a PreToolUse hook (`.claude/hooks/deny-github.mjs`, registered in `.claude/settings.json`) blocks every GitHub access: the `gh` CLI, `git push`, `pull`, `fetch`, `clone`, `remote add` and `set-url`, GitHub MCP tools, and any command or fetch with a GitHub URL. It recognizes `gh` and `git` by file name, so a full path such as `"C:\Program Files\GitHub CLI\gh.exe"` does not hide them, and it blocks creating git aliases, which could hide a push behind a new name. Both gaps were found in the security review; `test/hooks/denyGithub.test.ts` runs the hook the way Claude Code does.
 
 > [!NOTE]
-> **Decision: keep private material out of git.** The RAG1 copy used as reference (`RAG project/`) contains private documents and evaluation data, so it is ignored, together with the brief (`/*.pdf`), `.env` and build output. Only `.env.example` is committed.
+> **Decision: keep private material out of git.** The RAG1 copy used as reference (`RAG project/`) contains private documents and evaluation data, so it is ignored, together with the brief (`/*.pdf`), `.env` and build output. Only `.env.example` is committed. Audit reports (`audit-report-*.md`), which describe open problems step by step, and the author's personal cheat sheets (`*-cheatsheet.txt`) are ignored too.
 
 > [!NOTE]
 > **Decision: commit the Claude Code configuration.** `CLAUDE.md`, the skills, the settings and the hook are project rules, like a linter configuration, and contain no secrets. Personal settings belong in `.claude/settings.local.json`, which is ignored.
@@ -393,7 +394,7 @@ Uploading stores a document and queues its indexing; computing the embeddings is
 | `DELETE /v1/documents/:id` | Deletes it; its chunks and jobs go with it |
 | `GET /v1/jobs/:id` | The job's status and its position in the queue, for polling until indexing finishes |
 
-An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), when they already uploaded 3 documents in the last 24 hours, deleted ones included (429, see [section 16](#16-second-review-security-and-architecture)), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` reports `usage.documents` and `usage.uploadsToday` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours, and upload and question records older than the daily window.
+An upload is refused when the user already has 3 documents (409), when another of their documents is still being indexed (409), when they already uploaded 3 documents in the last 24 hours, deleted ones included (429, see [section 17](#17-second-review-security-and-architecture)), or when 20 jobs of all users are already waiting (503). `GET /v1/users/me` reports `usage.documents` and `usage.uploadsToday` (used and limit). Every 10 minutes `server.ts` runs the cleanup, which deletes documents older than 24 hours, and upload and question records older than the daily window.
 
 > [!NOTE]
 > **Decision: 202 Accepted for uploads.** The skills answer creations with 201, but an uploaded document cannot be used until its embeddings exist; 202 says exactly that, and the brief specified it. The client polls `GET /v1/jobs/:id` (and later listens to the event stream) to know when it is ready.
@@ -466,13 +467,13 @@ Two observations from that run, not yet decisions: a Spanish question about an E
 > **Decision: one turn with the model for the whole API.** Every Ollama request goes through `modelTurn.service.ts`, first come first served: indexing takes a turn per batch of 10 chunks, a question one turn for its whole answer. A question therefore waits for at most one batch (about 200 ms) instead of a whole document, and Ollama never gets two requests at once. A test indexes a document while a question arrives and checks both: the question is answered before the last batch, and Ollama never has two requests at the same time.
 
 > [!NOTE]
-> **Decision: at most 60 seconds, 20 questions waiting, one per user.** A question that has not finished after 60 seconds in total (`MAX_QUESTION_SECONDS`; the first version limited only the wait in line, see [section 17](#17-third-review-independent-audit)) gets a 503 if it was still waiting, a 504 if the model was answering, which keeps the request well under the 100 seconds after which Cloudflare cuts a response. With 20 questions already waiting (`MAX_WAITING_QUESTIONS`) a new one gets the 503 at once, before it is counted. Each user can have one question waiting or being answered (409 for a second one), so nobody fills the line alone.
+> **Decision: at most 60 seconds, 20 questions waiting, one per user.** A question that has not finished after 60 seconds in total (`MAX_QUESTION_SECONDS`; the first version limited only the wait in line, see [section 18](#18-third-review-independent-audit)) gets a 503 if it was still waiting, a 504 if the model was answering, which keeps the request well under the 100 seconds after which Cloudflare cuts a response. With 20 questions already waiting (`MAX_WAITING_QUESTIONS`) a new one gets the 503 at once, before it is counted. Each user can have one question waiting or being answered (409 for a second one), so nobody fills the line alone.
 
 > [!NOTE]
 > **Decision: a closed browser drops its question.** The controller turns the connection closing before the response into an `AbortSignal`: a question still in line leaves it, and one being answered aborts its Ollama request, which stops the generation. The model never works for nobody.
 
 > [!NOTE]
-> **Decision: 10 questions per minute and 30 per day, counted when accepted.** The per-minute limit is counted in memory per user (`rateLimitMiddleware` with the new `keyBy: "user"`), for every request. The daily limit was lowered from the brief's 50 to 30, counted in `question_usage` over the last 24 hours, like uploads; going over answers 429. A question counts when it is accepted, before the model is asked, which is safe when two requests arrive together, because the user's row is locked while counting. Since the third review it is given back when no answer came (see [section 17](#17-third-review-independent-audit)). Rejected questions (invalid, not found, not ready, busy) are not counted.
+> **Decision: 10 questions per minute and 30 per day, counted when accepted.** The per-minute limit is counted in memory per user (`rateLimitMiddleware` with the new `keyBy: "user"`), for every request. The daily limit was lowered from the brief's 50 to 30, counted in `question_usage` over the last 24 hours, like uploads; going over answers 429. A question counts when it is accepted, before the model is asked, which is safe when two requests arrive together, because the user's row is locked while counting. Since the third review it is given back when no answer came (see [section 18](#18-third-review-independent-audit)). Rejected questions (invalid, not found, not ready, busy) are not counted.
 
 > [!NOTE]
 > **Decision: a broken structured reply means "not enough evidence".** In structured mode the model must return `{"answerable": ..., "answer": ...}` with citations of fragments it received. When the reply breaks that contract (no citation, an invented one, an empty answer, or no JSON), the API answers `insufficient_evidence` with the fallback sentence instead of an error: an answer that cannot be checked should not be shown. Only the reason is logged, never the reply, which may quote the user's document.
@@ -520,7 +521,7 @@ Measured: an open stream takes about 35 KB of memory, counting both ends of the 
 
 ## 13. Local environment
 
-During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. The full hardened container setup comes later (see [Pending work](#18-pending-work)).
+During development only PostgreSQL runs in Docker; the API runs on the host with `tsx`. In deployment the API runs in Docker too (see [Deployment](#14-deployment)).
 
 > [!NOTE]
 > **Decision: PostgreSQL reachable from this computer only.** The port is published on `127.0.0.1`, data lives in a named Docker volume (no Windows folders are mounted), and the password comes from `.env`. The image is `pgvector/pgvector:pg17`, because the plain `postgres` image does not include pgvector.
@@ -528,7 +529,46 @@ During development only PostgreSQL runs in Docker; the API runs on the host with
 > [!NOTE]
 > **Decision: user name `rag`.** A user name is not a secret, so a complex one adds little; access is protected by the network exposure and a long random password. The default `postgres` user is avoided because it is the first one bots try. The real hardening is two users in deployment (see below).
 
-## 14. Agreed limits
+## 14. Deployment
+
+Step 5 of the brief, done on 2026-10-18 for the API: it runs in Docker on the laptop and is published at `https://rag-api.diegodebrun.com` through a Cloudflare Tunnel, with no port open on the router and no port of the API published on the laptop. Ollama stays on Windows. The frontend, still to build, will be served by Cloudflare Pages.
+
+| Container | What it is | Image |
+|---|---|---|
+| `db` | PostgreSQL 17 with pgvector; data in the `pgdata` volume; port `127.0.0.1:5432` for development and tests | `pgvector/pgvector:pg17` |
+| `api` | The compiled API; connects to `db` as `rag_app` and to Ollama at `host.docker.internal:11434`; no published port | `rag-web-api`, built from the `Dockerfile` |
+| `cloudflared` | The tunnel's connector: keeps an outbound connection to Cloudflare and passes the requests for the subdomain to `api:3000` | `cloudflare/cloudflared:2026.10.1` |
+| `migrate` | Not a running container: `docker compose run --rm migrate` applies the pending migrations as `rag` and exits (profile `tools`) | `rag-web-api` |
+
+A request goes from the browser to Cloudflare over HTTPS, through the tunnel to `cloudflared`, and over the compose's private network to `api:3000`, which reaches `db` by name and Ollama on the host. The files: `Dockerfile` and `.dockerignore`, `docker-compose.yml`, and `scripts/create-app-role.sql`. The README has the steps to set it up.
+
+Checked once it was running: the health check, a login, the event stream (heartbeats every 25 seconds and the indexing events of an upload as they happened), an upload and a structured answer in about one second, all from the internet through the tunnel; `docker compose stop api` takes 0.4 seconds and logs the graceful shutdown; the container runs as `node` and cannot write to its filesystem; the laptop's port 3001 no longer answers; `rag_app` cannot create or drop tables.
+
+> [!NOTE]
+> **Decision: a two-stage image with no secrets inside.** The first stage installs everything and compiles TypeScript; the final one starts from a clean Node 22 Alpine image with only `dist/`, `migrations/` and the production dependencies, and runs as the unprivileged `node` user. `.dockerignore` keeps `.env`, the private documents in `RAG project/`, the brief and the audit reports out of the build, so they can never end up in an image. The migrations run compiled (`node dist/migrate.js`), so the image needs no `tsx`.
+
+> [!NOTE]
+> **Decision: the tunnel runs as a container of the compose.** `cloudflared` could also run as a Windows service, but then the API would have to publish a port on the laptop, and the address to trust would be Docker's gateway. As a container next to the API, the API publishes nothing: it is reachable only from the compose's network, which means only through the tunnel and Cloudflare's protections. `TRUSTED_PROXIES` is `uniquelocal` (private addresses, which include that network), so the API reads the visitor's address from the header Cloudflare adds.
+
+> [!NOTE]
+> **Decision: two database users.** `rag`, the superuser the PostgreSQL image creates, owns the tables and runs the migrations, through the `migrate` service, which only runs on demand, so its password is never in a container that stays up. The API connects as `rag_app`, which can only `SELECT`, `INSERT`, `UPDATE` and `DELETE` rows: no `CREATE`, `DROP`, `ALTER` or `TRUNCATE`, and no access to `schema_migrations`. Default privileges give it the same rights on the tables of future migrations. If the API were ever taken over, the attacker could not drop tables or run code on the database server. The role is created by `scripts/create-app-role.sql`, run once by hand, and its password is set with `\password` so it never appears in a command. It is not a migration because roles belong to the whole server and the migrations also run on the test database.
+
+> [!NOTE]
+> **Decision: a hardened API container.** `init` passes signals to Node and reaps processes; `read_only` (with an in-memory `/tmp`) keeps anyone from changing the code or leaving files; `cap_drop: ALL` removes Linux's special permissions, none of which the API needs; `no-new-privileges` stops any process from gaining more; 512 MB of memory (384 for Node's heap), one CPU and 200 processes cap what a bug or an attack can take from the laptop; the logs rotate at 10 MB; and `stop_grace_period: 10s` leaves room for the 9-second graceful shutdown. `cloudflared` is read-only, without capabilities, with 128 MB.
+
+> [!NOTE]
+> **Decision: a named tunnel on the author's domain, one subdomain per part.** A quick tunnel is free but its address changes and it does not support Server-Sent Events. The author already had `diegodebrun.com` on Cloudflare, so the tunnel is a named one: a stable address, and the live events work. `rag-api.diegodebrun.com` is the API, `rag.diegodebrun.com` is kept for the frontend, and the domain itself for a personal site. A second-level name such as `api.rag.diegodebrun.com` was avoided because Cloudflare's free certificate only covers one level (`*.diegodebrun.com`).
+
+> [!NOTE]
+> **Decision: secrets only in `.env`, versions pinned.** `POSTGRES_PASSWORD`, `SECRET_KEY`, `APP_DB_PASSWORD` and `CLOUDFLARE_TUNNEL_TOKEN` live in `.env`, which git ignores; the compose passes each container only the variables it lists, never the whole file, and refuses to start when a required one is missing. The tunnel token is a credential: with it anyone could attach their own server to the tunnel. The `cloudflared` image is pinned to a version instead of `latest`, so a new download cannot change it unnoticed; it is updated by hand every few months, since Cloudflare stops accepting very old versions.
+
+> [!NOTE]
+> **Decision: Ollama stays on Windows, on localhost.** It needs the GPU, and Docker Desktop lets the container reach it at `host.docker.internal` while Ollama still listens only on `127.0.0.1` (checked: the API logs "Models loaded" at startup). Ollama is never opened to the network (`OLLAMA_HOST=0.0.0.0`).
+
+> [!NOTE]
+> **Decision: everything starts with the laptop.** Ollama starts with the Windows session, Docker Desktop is set to start with it too, and the containers have `restart: unless-stopped`, so the API, the tunnel and the database come back on their own after a reboot, and the API preloads both models while nobody is waiting.
+
+## 15. Agreed limits
 
 The enforced values can be changed in `.env` (see `.env.example`).
 
@@ -554,7 +594,7 @@ The enforced values can be changed in `.env` (see `.env.example`).
 > [!NOTE]
 > **Decision: stricter limits than the brief's examples.** Registration is limited to 3 per IP per hour (shared networks such as universities still work) and documents are deleted after 24 hours instead of 7 days. Behind Cloudflare the API must read the real client IP from `CF-Connecting-IP`, trusted only for requests that come through the tunnel; otherwise every request would look like the tunnel's and share one limit.
 
-## 15. Security review
+## 16. Security review
 
 On 2026-10-17 the whole project was reviewed for bugs and vulnerabilities. Every suspicion was first probed against the real app on the test database; each confirmed problem got a test that fails on the old code and passes with the fix (checked by running the new tests with the fixes stashed).
 
@@ -578,7 +618,7 @@ Checked and already safe, now covered by tests: a `__proto__` key cannot grant a
 
 Notes that need no test now: validation `details` echo the names of unknown fields, so the frontend must show them as text, never as HTML; `/v1/health` has no rate limit (each call is one `SELECT 1` and one small Ollama request); passwords are not checked against a list of common passwords, which NIST recommends; a token keeps its role until it expires (1 hour), so demoting an admin takes effect after that; a token can outlive its account, which the documents layer answers with a 404 (see its section).
 
-## 16. Second review: security and architecture
+## 17. Second review: security and architecture
 
 On 2026-10-17, before the questions layer, the project was reviewed again: for security problems, and for places that break the layered architecture or the SOLID principles. Security suspicions were probed against the real app; the architecture was checked by reading the code and with a script that lists the imports between layers (no layer imports one it should not). As in the first review, every fix has a test that fails without it, checked by removing the fix and running the test.
 
@@ -598,7 +638,7 @@ Already fine: every query is parameterized and filtered by its owner, the domain
 | A5 | The queue decided to retry by looking at an HTTP status (503) | `ModelUnavailableError` | `jobQueue.test.ts` |
 | A7 | The list of user columns was duplicated in two services | Exported once from `users.service.ts` | existing auth tests |
 
-Deferred, and listed in [Pending work](#18-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
+Deferred, and listed in [Pending work](#19-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
 
 > [!NOTE]
 > **Decision: 3 uploads per user per day.** The quotas did not stop a loop of upload and delete, because deleting frees the slot, and every upload makes Ollama work. Accepted uploads are recorded in their own table, `upload_usage` (migration `002`), because deleting a document deletes its row. The limit counts the last 24 hours (a rolling window, like the planned question quota), the cleanup removes older rows, and only accepted uploads count, so a rejected one costs nothing. Going over answers 429, because it is a rate over time; the document and indexing quotas stay 409 and are checked first. The review proposed 10 per hour with the in-memory rate limiter; a count in the database, with the same value as the document limit, was chosen instead: it survives restarts and `GET /v1/users/me` can show it (`usage.uploadsToday`). Configurable with `MAX_UPLOADS_PER_DAY`.
@@ -624,7 +664,7 @@ Deferred, and listed in [Pending work](#18-pending-work): S5, `/v1/health` has n
 > [!NOTE]
 > **Decision: `ModelUnavailableError` for "try again later".** Ollama being unreachable is thrown as `ModelUnavailableError`, a subclass of `AppError` with status 503, and the queue puts a job back only for that type. Before, it did so for any `AppError` with status 503, which tied the background work to an HTTP code: a future 503 thrown for another reason would have been retried forever. HTTP clients still get the same 503.
 
-## 17. Third review: independent audit
+## 18. Third review: independent audit
 
 On 2026-10-17, before exposing the API, the code was audited by a separate agent that had not seen this guide or any of the conversations behind it (`.claude/agents/code-auditor.md`). It can only read: its tools are `Read`, `Grep` and `Glob`, it starts without any `CLAUDE.md`, and a hook (`.claude/hooks/auditor-read-scope.mjs`, with its own tests) limits it to `src/`, `test/`, `migrations/`, `node_modules/` and a few configuration files: this guide, the skills, the private documents and `.env` are out of its reach. Each finding was then checked against the code or reproduced, and each fix has a test that fails without it. The report itself stays out of git (`audit-report-*.md` in `.gitignore`): it describes open problems step by step.
 
@@ -660,14 +700,13 @@ With them, two pending items were done: the graceful shutdown (S7: `closeServerG
 > [!NOTE]
 > **Decision: no email verification.** Opening many accounts to take shared capacity (streams, queue) is slowed by the per-address limits, which work now, and will be by Turnstile on registration. Verifying emails would stop it better but needs mail sending; not for the proof of concept.
 
-## 18. Pending work
+## 19. Pending work
 
-- **Next step:** deployment and the frontend (step 5 of the brief, below).
+- **Next step:** the frontend at `rag.diegodebrun.com` on Cloudflare Pages: text extraction in the browser with pdf.js and mammoth, the live events, Turnstile on registration, and `CORS_ORIGINS` set to its address.
 - **Frontend and the event stream:** read it with `fetch()` and the token in the header; open it only while a document is being indexed or a question is waiting, and close it afterwards; reconnect when it drops, after reading `GET /v1/jobs/:id`; ignore a `queued` event that arrives after `started` for the same job (two messages sent at almost the same moment can arrive in that order); with a quick Cloudflare tunnel, which does not support SSE, read `GET /v1/jobs/:id` every 2 or 3 seconds instead.
 - **Models unloaded after 5 idle minutes:** Ollama's default. Reloading both takes about 8 seconds (3 for the embedding model, 5 for the answer model), so the first question after a pause waits that long. A longer `keep_alive` would avoid it, at the cost of keeping 4.6 GB of video memory while the laptop is used for other things; left as it is.
 - **Frontend: the two answer modes:** a short description next to the mode selector: structured abstains more often and invents less (18/20 correct abstentions in RAG1's evaluation), baseline answers more questions (60/80 against 54/80).
 - **Questions in another language (idea):** a Spanish question about an English document finds no chunk above 0.30. The frontend could warn about it, or the brief's idea of answering in the document's language could be explored.
-- **Before exposing the API:** set `TRUSTED_PROXIES` to where cloudflared connects from (if it does not run on the same machine as the API) and `CORS_ORIGINS` to the frontend's address, and make sure the API's port is reachable only through the tunnel. Check the graceful shutdown with `docker stop` once the container exists (Windows cannot send the signal to a local process).
 - **Jobs retried forever (F10, idea):** a job whose batch made Ollama drop the connection every time would go back to the queue every 10 seconds. Count attempts and fail the job after a few, only when Ollama is otherwise reachable.
 - **Model provider interfaces (A6):** only if a second provider appears, such as the cloud model the brief mentions as an idea.
 - **CORS (S8):** limited to `CORS_ORIGINS` when it is set (any origin otherwise, for development); set it when the frontend is deployed.
@@ -675,5 +714,6 @@ With them, two pending items were done: the graceful shutdown (S7: `closeServerG
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.
 - **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `upload_usage` and `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.
 - **Tiny last chunks (idea):** the last chunk of a document can be very short and match questions unreliably; merging it into the previous chunk when it is under about 200 characters would avoid that.
-- **Deployment (step 5 of the brief):** Dockerfile and compose hardening (non-root user, read-only filesystem, `cap_drop: ALL`, no published API port), two database users (an owner for migrations and a limited one for the API), Cloudflare Tunnel, Turnstile and the frontend. For the API, and with it the model preload, to start when the laptop boots: Docker Desktop starts with the Windows session and the API container has `restart: unless-stopped`; Ollama already starts with the session.
+- **Turnstile on registration:** Cloudflare's mostly invisible bot check on `POST /v1/auth/register` (a middleware that verifies the browser's token with a secret key from `.env`), done together with the frontend's registration form. It slows down anyone creating accounts in bulk to take shared capacity (F4).
+- **Updating `cloudflared`:** change the pinned image version every few months, then `docker compose up -d`.
 - **Evaluation:** measure the Spanish prompts and the adjusted citation rule once the question endpoint works.
