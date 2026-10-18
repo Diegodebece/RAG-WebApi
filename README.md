@@ -65,7 +65,7 @@ It turns the command-line app from [RAG-learning](https://github.com/Diegodebece
 
 In deployment the API runs in Docker next to PostgreSQL, and a Cloudflare Tunnel publishes it on a subdomain without opening any port. Ollama keeps running on the host. The guide's [Deployment](docs/project-guide.md#14-deployment) section explains every choice.
 
-1. In `.env`, besides the values from the setup above, set `APP_DB_PASSWORD` (another random value) and `CLOUDFLARE_TUNNEL_TOKEN`. To get the token, create a tunnel in the Cloudflare dashboard (Networking, Tunnels), choose Docker, and copy only what follows `--token` in the command it shows. Then add a published application route from your subdomain to `http://api:3000`.
+1. In `.env`, besides the values from the setup above, set `APP_DB_PASSWORD` (another random value) and `CLOUDFLARE_TUNNEL_TOKEN`. To get the token, create a tunnel in the Cloudflare dashboard (Networking, Tunnels), choose Docker, and copy only what follows `--token` in the command it shows. Then add a published application route from your subdomain to `http://api:3000`. In `docker-compose.yml`, set `CORS_ORIGINS` to your frontend's address: settings that are not secrets go there, because the container only receives the variables the compose lists.
 
 2. Start the database and create the API's database user, which can only read and change rows:
 

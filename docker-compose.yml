@@ -28,6 +28,7 @@ services:
             OLLAMA_BASE_URL: http://host.docker.internal:11434
             NODE_OPTIONS: --max-old-space-size=384
             TRUSTED_PROXIES: uniquelocal
+            CORS_ORIGINS: https://rag.diegodebrun.com,http://localhost:5173
         
         depends_on:
             db:

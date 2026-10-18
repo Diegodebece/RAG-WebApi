@@ -30,6 +30,7 @@ describe("auditor-read-scope hook", () => {
             "package.json",
             "tsconfig.json",
             "docker-compose.yml",
+            "Dockerfile",
             ".env.example",
             "SRC/app.ts"
         ]) {

@@ -1,5 +1,5 @@
-// PreToolUse hook of the code-auditor subagent (.claude/agents/code-auditor.md): it may read only the code, the
-// tests, the migrations and a few configuration files. Everything else is out of reach: the design notes and
+// PreToolUse hook of the auditor subagents (.claude/agents/code-auditor.md and owasp-auditor.md): they may read
+// only the code, the tests, the migrations and a few configuration files. Everything else is out of reach: the design notes and
 // skills (so the audit does not inherit the author's assumptions), the private documents in "RAG project", the
 // brief and .env (so it never sees private files or secrets). Grep and Glob must name an allowed path, because a
 // search of the whole project would return text from blocked files. SubagentHandback is allowed too: it is how
@@ -16,10 +16,11 @@ const ALLOWED_FILES = new Set([
     "tsconfig.json",
     "tsconfig.test.json",
     "docker-compose.yml",
+    "dockerfile",
     ".env.example",
     ".gitignore"
 ]);
-const ALLOWED_DESCRIPTION = "src/, test/, migrations/, node_modules/ and package.json, package-lock.json, tsconfig.json, tsconfig.test.json, docker-compose.yml, .env.example, .gitignore";
+const ALLOWED_DESCRIPTION = "src/, test/, migrations/, node_modules/ and package.json, package-lock.json, tsconfig.json, tsconfig.test.json, docker-compose.yml, Dockerfile, .env.example, .gitignore";
 
 const readStdin = async () => {
     const chunks = [];
