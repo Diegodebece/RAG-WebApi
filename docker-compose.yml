@@ -17,6 +17,69 @@ services:
             timeout: 5s
             retries: 10
         restart: unless-stopped
+    
+    api:
+        build: .
+        image: rag-web-api
+        environment:
+            DATABASE_URL: postgres://rag_app:${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}@db:5432/rag
+            SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+            HOST: 0.0.0.0
+            OLLAMA_BASE_URL: http://host.docker.internal:11434
+            NODE_OPTIONS: --max-old-space-size=384
+            TRUSTED_PROXIES: uniquelocal
+        
+        depends_on:
+            db:
+                condition: service_healthy
+        restart: unless-stopped
+        init: true
+        read_only: true
+        tmpfs:
+            - /tmp
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        mem_limit: 512m
+        cpus: 1.0
+        pids_limit: 200
+        stop_grace_period: 10s
+        logging:
+            driver: json-file
+            options:
+                max-size: "10m"
+                max-file: "3"
+
+    migrate:
+        image: rag-web-api
+        command: ["node", "dist/migrate.js"]
+        environment:
+            DATABASE_URL: postgres://rag:${POSTGRES_PASSWORD}@db:5432/rag
+        depends_on:
+            db:
+                condition: service_healthy
+        profiles: ["tools"]
+
+    cloudflared:
+        image: cloudflare/cloudflared:latest
+        command: tunnel --no-autoupdate run
+        environment:
+            TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env}
+        depends_on:
+            - api
+        restart: unless-stopped
+        read_only: true
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        mem_limit: 128m
+        logging:
+            driver: json-file
+            options:
+                max-size: "10m"
+                max-file: "3"
 
 volumes:
     pgdata:
