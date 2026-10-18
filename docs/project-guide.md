@@ -563,6 +563,9 @@ Checked once it was running: the health check, a login, the event stream (heartb
 > **Decision: secrets only in `.env`, versions pinned.** `POSTGRES_PASSWORD`, `SECRET_KEY`, `APP_DB_PASSWORD` and `CLOUDFLARE_TUNNEL_TOKEN` live in `.env`, which git ignores; the compose passes each container only the variables it lists, never the whole file, and refuses to start when a required one is missing. The tunnel token is a credential: with it anyone could attach their own server to the tunnel. The `cloudflared` image is pinned to a version instead of `latest`, so a new download cannot change it unnoticed; it is updated by hand every few months, since Cloudflare stops accepting very old versions.
 
 > [!NOTE]
+> **Decision: settings that are not secrets are written in the compose.** Because the compose passes only the variables it lists, a setting added to `.env` never reaches the API container. Values that are not secrets go directly into `docker-compose.yml`, under the `api` service's `environment`, where they are reviewed with the rest of the deployment. The first is `CORS_ORIGINS`: `https://rag.diegodebrun.com` (the frontend) and `http://localhost:5173` (Vite's dev server, to develop the frontend against the published API). Any other origin gets no `Access-Control-Allow-Origin` header, so browsers refuse to give its pages the API's responses.
+
+> [!NOTE]
 > **Decision: Ollama stays on Windows, on localhost.** It needs the GPU, and Docker Desktop lets the container reach it at `host.docker.internal` while Ollama still listens only on `127.0.0.1` (checked: the API logs "Models loaded" at startup). Ollama is never opened to the network (`OLLAMA_HOST=0.0.0.0`).
 
 > [!NOTE]
@@ -570,7 +573,7 @@ Checked once it was running: the health check, a login, the event stream (heartb
 
 ## 15. Agreed limits
 
-The enforced values can be changed in `.env` (see `.env.example`).
+The enforced values can be changed in `.env` (see `.env.example`); in Docker, in the `api` service's `environment` in `docker-compose.yml`.
 
 | Limit | Value |
 |---|---|
@@ -692,6 +695,9 @@ With them, two pending items were done: the graceful shutdown (S7: `closeServerG
 > **Decision: an independent, read-only auditor.** The author of the code tends to see what they expected, so the audit ran without the guide's reasoning. Read-only is enforced, not requested: the agent has no tool that writes, edits, runs commands or reaches the network, and the hook denies everything outside its paths. It must never be replaced by a general agent, which has a shell.
 
 > [!NOTE]
+> **Decision: a second auditor for OWASP.** `.claude/agents/owasp-auditor.md` has the same restrictions and the same hook (which now also lets both auditors read the `Dockerfile`), but a different job: instead of hunting freely for bugs, it goes through a fixed checklist, the OWASP API Security Top 10 (2023) and the OWASP Top 10 for LLM Applications (2025), and gives every item a verdict (meets, partial, does not meet, not applicable, outside the code) with evidence. The checklist is written into the agent itself, in terms of this project, because the agent has no network access and cannot read the docs. Keeping it separate from `code-auditor` lets each one run at a different time without being influenced by the other. It reads only the code, so a dependency scan (`npm audit`), the Cloudflare settings and how the frontend renders answers are checked outside it; its report goes to `audit-report-owasp-<date>.md`, kept out of git like the other reports.
+
+> [!NOTE]
 > **Decision: trust only the tunnel's address header.** `TRUSTED_PROXIES` lists the proxies (by default this computer, where cloudflared runs; in Docker, the address cloudflared connects from). Express then takes the right-most address in `X-Forwarded-For` that is not a trusted proxy: the one Cloudflare appended. Never `true`, which would take the left-most entry, written by the client. The API port must be reachable only through the tunnel.
 
 > [!NOTE]
@@ -702,14 +708,14 @@ With them, two pending items were done: the graceful shutdown (S7: `closeServerG
 
 ## 19. Pending work
 
-- **Next step:** the frontend at `rag.diegodebrun.com` on Cloudflare Pages: text extraction in the browser with pdf.js and mammoth, the live events, Turnstile on registration, and `CORS_ORIGINS` set to its address.
+- **OWASP audit:** run `owasp-auditor` once from a new conversation as a starting point, together with `npm audit`, and again after each new layer before merging (the admin statistics first, since it adds an admin endpoint).
+- **Next step:** the frontend at `rag.diegodebrun.com` on Cloudflare Pages: text extraction in the browser with pdf.js and mammoth, the live events, and Turnstile on registration. `CORS_ORIGINS` already allows its address.
 - **Frontend and the event stream:** read it with `fetch()` and the token in the header; open it only while a document is being indexed or a question is waiting, and close it afterwards; reconnect when it drops, after reading `GET /v1/jobs/:id`; ignore a `queued` event that arrives after `started` for the same job (two messages sent at almost the same moment can arrive in that order); with a quick Cloudflare tunnel, which does not support SSE, read `GET /v1/jobs/:id` every 2 or 3 seconds instead.
 - **Models unloaded after 5 idle minutes:** Ollama's default. Reloading both takes about 8 seconds (3 for the embedding model, 5 for the answer model), so the first question after a pause waits that long. A longer `keep_alive` would avoid it, at the cost of keeping 4.6 GB of video memory while the laptop is used for other things; left as it is.
 - **Frontend: the two answer modes:** a short description next to the mode selector: structured abstains more often and invents less (18/20 correct abstentions in RAG1's evaluation), baseline answers more questions (60/80 against 54/80).
 - **Questions in another language (idea):** a Spanish question about an English document finds no chunk above 0.30. The frontend could warn about it, or the brief's idea of answering in the document's language could be explored.
 - **Jobs retried forever (F10, idea):** a job whose batch made Ollama drop the connection every time would go back to the queue every 10 seconds. Count attempts and fail the job after a few, only when Ollama is otherwise reachable.
 - **Model provider interfaces (A6):** only if a second provider appears, such as the cloud model the brief mentions as an idea.
-- **CORS (S8):** limited to `CORS_ORIGINS` when it is set (any origin otherwise, for development); set it when the frontend is deployed.
 - **Health with the database down:** `checkDatabase` reports `down` when the query fails or the 5-second connection timeout passes, but no automated test covers that case yet.
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.
 - **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `upload_usage` and `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.
