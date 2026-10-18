@@ -1,0 +1,16 @@
+# secrets and private files: never inside an image
+.env
+.env.*
+RAG project/
+*.pdf
+audit-report-*.md
+
+# rebuilt inside the image or not needed to run the API
+node_modules/
+dist/
+coverage/
+test/
+docs/
+.git/
+.claude/
+*.log
