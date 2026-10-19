@@ -13,7 +13,7 @@ I built it with Claude Code's skills, subagents and hooks. The skills describe t
 
 > **Status:** the API is complete and deployed: accounts, documents indexed in the background, questions with cited answers, live events, and a Docker setup published through a Cloudflare Tunnel. The frontend is next. See [docs/project-guide.md](docs/project-guide.md) for how everything works and why it was built this way.
 
-It turns the command-line app from [RAG-learning](https://github.com/Diegodebece/RAG-learning) (RAG1) into a web service, reusing its retrieval and answer pipelines and the settings measured in its evaluation.
+It turns the command-line app from my other repo, [RAG-learning](https://github.com/Diegodebece/RAG-learning), into a web service, reusing its retrieval and answer pipelines and the settings measured in its evaluation.
 
 ## How it works
 
