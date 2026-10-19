@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes, scryptSync } from "node:crypto";
 import { hashPassword, verifyPassword } from "../../src/v1/utils/password.util.js";
 
 describe("hashPassword", () => {
@@ -8,7 +9,8 @@ describe("hashPassword", () => {
         const [algorithm, N, r, p, salt, hash] = stored.split("$");
 
         assert.equal(algorithm, "scrypt");
-        assert.deepEqual([N, r, p], ["16384", "8", "1"]);
+        // OWASP's scrypt setting for 16 MiB of memory: N = 2^14, r = 8, p = 5
+        assert.deepEqual([N, r, p], ["16384", "8", "5"]);
         assert.match(salt, /^[0-9a-f]{32}$/);
         assert.match(hash, /^[0-9a-f]{128}$/);
     });
@@ -44,6 +46,15 @@ describe("verifyPassword", () => {
 
         assert.equal(await verifyPassword(decomposed, await hashPassword(precomposed)), true);
         assert.equal(await verifyPassword(precomposed, await hashPassword(decomposed)), true);
+    });
+
+    it("still accepts passwords hashed with the earlier cost parameters", async () => {
+        const salt = randomBytes(16);
+        const hash = scryptSync("old password", salt, 64, { N: 16384, r: 8, p: 1 });
+        const stored = ["scrypt", 16384, 8, 1, salt.toString("hex"), hash.toString("hex")].join("$");
+
+        assert.equal(await verifyPassword("old password", stored), true);
+        assert.equal(await verifyPassword("other password", stored), false);
     });
 
     it("rejects values that are not a stored scrypt hash", async () => {

@@ -3,7 +3,7 @@ import { pool } from "../config/db.config.js";
 import { getSecretKey } from "../config/auth.config.js";
 import { AppError } from "../utils/appError.util.js";
 import { isUniqueViolation } from "../utils/dbErrors.util.js";
-import { hashPassword, verifyPassword } from "../utils/password.util.js";
+import { hashPassword, needsRehash, verifyPassword } from "../utils/password.util.js";
 import { signToken } from "../utils/token.util.js";
 import { USER_COLUMNS } from "./users.service.js";
 import type { AuthResult } from "../types/auth.type.js";
@@ -72,6 +72,12 @@ export const loginUserService = async (loginData: LoginUserInput): Promise<AuthR
 
     if (!(await verifyPassword(loginData.password, record.passwordHash))) {
         throw new AppError(401, INVALID_CREDENTIALS_MESSAGE);
+    }
+
+    // a hash made with earlier cost parameters is replaced now that the password is known: it gets the current
+    // protection, and its logins stop being faster than the others
+    if (needsRehash(record.passwordHash)) {
+        await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [await hashPassword(loginData.password), record.id]);
     }
 
     const user: User = { id: record.id, email: record.email, role: record.role, createdAt: record.createdAt };

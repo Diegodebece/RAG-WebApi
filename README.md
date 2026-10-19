@@ -101,7 +101,7 @@ After changing the code: `docker compose build api`, `docker compose run --rm mi
 
 ## Endpoints
 
-All paths start with `/v1`. Protected endpoints need the header `Authorization: Bearer <token>`.
+All paths start with `/v1`. Protected endpoints need the header `Authorization: Bearer <token>`, and each user can make 120 requests per minute to them, on top of each endpoint's own limits.
 
 | Method and path | Access | What it does |
 |---|---|---|
@@ -113,7 +113,7 @@ All paths start with `/v1`. Protected endpoints need the header `Authorization: 
 | `GET /documents` | Protected | Lists your documents, newest first |
 | `GET /documents/:id` | Protected | Returns one of your documents |
 | `DELETE /documents/:id` | Protected | Deletes one of your documents |
-| `POST /documents/:id/ask` | Protected | Answers `{ question, mode?, language? }` about one of your ready documents with `{ status, answer, citations, sources, timings }`. `mode` is `baseline` (default) or `structured`, `language` `en` (default) or `es`. 10 questions per minute and 30 per day; the answer comes in the response, within 60 seconds in total, and a question that gets no answer does not count |
+| `POST /documents/:id/ask` | Protected | Answers `{ question, mode?, language? }` about one of your ready documents with `{ status, answer, citations, sources, timings }`. `mode` is `baseline` (default) or `structured`, `language` `en` (default) or `es`. 10 questions per minute and 30 per day; the answer comes in the response, within 60 seconds in total, and a question that gets no answer does not count, unless you leave while the model is answering |
 | `GET /jobs/:id` | Protected | Returns a job's status, its position in the queue and its progress (chunks embedded out of the total) |
 | `GET /events` | Protected | A stream of your live events (Server-Sent Events): your documents' place in the indexing queue and their progress, and your question's place in line while it waits for the model. Read it with `fetch()` and the `Authorization` header; at most 2 streams per user and 4 per address, and a stream ends when its token expires |
 

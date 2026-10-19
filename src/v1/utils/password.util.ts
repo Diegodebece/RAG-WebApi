@@ -2,8 +2,11 @@ import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import type { ScryptOptions } from "node:crypto";
 
 // scrypt cost parameters: N (CPU and memory cost), r (block size), p (parallelism).
-// They are stored with every hash, so raising them later keeps old passwords verifiable.
-const COST = { N: 16384, r: 8, p: 1 };
+// They are stored with every hash, so raising them later keeps old passwords verifiable (hashes made before
+// with p = 1 still work). N = 2^14, r = 8, p = 5 is one of OWASP's equivalent settings: each hash needs
+// 16 MiB (128 * N * r bytes), and p multiplies the work. OWASP's first option, N = 2^17, needs 128 MiB per
+// hash, so four logins at once would take the whole 512 MB the container has.
+const COST = { N: 16384, r: 8, p: 5 };
 const SALT_BYTES = 16;
 const KEY_BYTES = 64;
 
@@ -23,6 +26,14 @@ export const hashPassword = async (password: string): Promise<string> => {
     const hash = await deriveKey(normalizePassword(password), salt, KEY_BYTES, COST);
 
     return ["scrypt", COST.N, COST.r, COST.p, salt.toString("hex"), hash.toString("hex")].join("$");
+};
+
+// True when a stored hash was made with other cost parameters than the current ones, so it should be replaced
+// the next time its password is known (a successful login).
+export const needsRehash = (storedHash: string): boolean => {
+    const [, N, r, p] = storedHash.split("$");
+
+    return Number(N) !== COST.N || Number(r) !== COST.r || Number(p) !== COST.p;
 };
 
 // Recomputes the hash with the stored salt and parameters. timingSafeEqual takes the same time whether the
