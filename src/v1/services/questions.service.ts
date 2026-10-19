@@ -90,8 +90,9 @@ const recordQuestion = async (userId: string): Promise<string> =>
         return record.id;
     });
 
-// A question that got no answer (it waited too long, Ollama was down or too slow, or the browser left) does not
-// count. A failure here is only logged: the error the user gets is the one that stopped the question.
+// A question that got no answer through no fault of the user (it waited too long, Ollama was down or too slow, or
+// the browser left before its turn) does not count. A failure here is only logged: the error the user gets is the
+// one that stopped the question.
 const giveQuestionBack = async (usageId: string): Promise<void> => {
     try {
         await pool.query("DELETE FROM question_usage WHERE id = $1", [usageId]);
@@ -172,6 +173,7 @@ export const askQuestionService = async (
     try {
         const usageId = await recordQuestion(userId);
         let answered = false;
+        let modelStarted = false;
 
         try {
             const queued = performance.now();
@@ -182,6 +184,7 @@ export const askQuestionService = async (
 
             const result = await runWithModelTurnService(async (): Promise<QuestionAnswer> => {
                 const waitMs = elapsedSince(queued);
+                modelStarted = true;
                 emitEvent({ type: "question_started", userId });
 
                 const embeddingStarted = performance.now();
@@ -230,7 +233,11 @@ export const askQuestionService = async (
             answered = true;
             return result;
         } finally {
-            if (!answered) {
+            // a browser that leaves once the model has started still used its time, so the question counts;
+            // otherwise cancelling just before the answer would ask the model again and again for free
+            const leftDuringAnswer = modelStarted && signal?.aborted === true;
+
+            if (!answered && !leftDuringAnswer) {
                 await giveQuestionBack(usageId);
             }
         }

@@ -1,5 +1,6 @@
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes, scryptSync } from "node:crypto";
 import request from "supertest";
 import jwt from "jsonwebtoken";
 
@@ -111,6 +112,21 @@ describe("POST /v1/auth/login", () => {
         assert.equal(unknownEmail.status, 401);
         assert.deepEqual(wrongPassword.body, { message: "Invalid email or password" });
         assert.deepEqual(unknownEmail.body, wrongPassword.body);
+    });
+
+    it("moves a password hashed with the earlier cost parameters to the current ones on login", async () => {
+        const salt = randomBytes(16);
+        const hash = scryptSync(credentials.password, salt, 64, { N: 16384, r: 8, p: 1 });
+        const oldHash = ["scrypt", 16384, 8, 1, salt.toString("hex"), hash.toString("hex")].join("$");
+        await pool.query("INSERT INTO users (email, password_hash) VALUES ($1, $2)", [credentials.email, oldHash]);
+        const storedHash = async () => (await pool.query<{ hash: string }>("SELECT password_hash AS hash FROM users")).rows[0].hash;
+
+        assert.equal((await login({ email: credentials.email, password: "wrong password" })).status, 401);
+        assert.equal(await storedHash(), oldHash, "a failed login changes nothing");
+
+        assert.equal((await login()).status, 200);
+        assert.match(await storedHash(), /^scrypt\$16384\$8\$5\$/);
+        assert.equal((await login()).status, 200, "the new hash accepts the same password");
     });
 });
 

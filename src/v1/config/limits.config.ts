@@ -24,6 +24,13 @@ export const FAILED_LOGINS_PER_EMAIL_PER_15_MINUTES = readIntegerSetting("FAILED
 // how long a login token stays valid
 export const TOKEN_LIFETIME_SECONDS = readIntegerSetting("TOKEN_LIFETIME_SECONDS", 3600);
 
+// every request a logged-in user makes to the protected routes, per minute; the routes' own limits apply on top.
+// Generous for a browser (reading a job every 2 or 3 seconds is 30), but it stops one account from taking every
+// database connection with a flood of cheap requests.
+export const AUTHENTICATED_REQUESTS_PER_MINUTE = readIntegerSetting("AUTHENTICATED_REQUESTS_PER_MINUTE", 120);
+
+export const AUTHENTICATED_REQUEST_WINDOW_MS = MINUTE_MS;
+
 export const MAX_DOCUMENTS_PER_USER = readIntegerSetting("MAX_DOCUMENTS_PER_USER", 3);
 
 // upload requests per user per minute, counted in memory before the body is read, accepted or not

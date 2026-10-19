@@ -22,7 +22,8 @@ Contents:
 16. [Security review](#16-security-review)
 17. [Second review: security and architecture](#17-second-review-security-and-architecture)
 18. [Third review: independent audit](#18-third-review-independent-audit)
-19. [Pending work](#19-pending-work)
+19. [Fourth review: OWASP audit](#19-fourth-review-owasp-audit)
+20. [Pending work](#20-pending-work)
 
 ## 1. Origin and goal
 
@@ -351,7 +352,7 @@ The first endpoints. `src/app.ts` builds the app (security headers, CORS, the `/
 Registering trims and lowercases the email, rejects one that is already taken (409), hashes the password and returns the new user with a token. Logging in looks the user up by email, verifies the password and returns the user with a token. The token carries `{ id, role }`, is signed with `SECRET_KEY` using HS256 and expires after 1 hour (a token without an expiry is rejected); signing and verifying both live in `utils/token.util.ts`. Tests in `test/routes/` call the real app with `supertest` against the test database; `health.test.ts` uses a fake Ollama so it does not depend on the real one.
 
 > [!NOTE]
-> **Decision: scrypt hashes that carry their own parameters.** Passwords are hashed with Node's built-in `crypto.scrypt` (as the brief proposed), with a random 16-byte salt, and stored as `scrypt$N$r$p$salt$hash`. Because the cost parameters travel with each hash, they can be raised later without breaking existing passwords. Verification uses `timingSafeEqual`, which takes the same time whichever byte differs.
+> **Decision: scrypt hashes that carry their own parameters.** Passwords are hashed with Node's built-in `crypto.scrypt` (as the brief proposed), with a random 16-byte salt, and stored as `scrypt$N$r$p$salt$hash`. Because the cost parameters travel with each hash, they can be raised later without breaking existing passwords. Verification uses `timingSafeEqual`, which takes the same time whichever byte differs. The fourth review raised `p` from 1 to 5 (see [section 19](#19-fourth-review-owasp-audit)).
 
 > [!NOTE]
 > **Decision: passwords of 8 to 64 characters, with no character rules.** Following current NIST guidance, length protects more than forced symbols or capitals. 64 is the minimum maximum NIST recommends and fits passphrases and password managers; 32 was considered but would reject long passphrases. Passwords are not trimmed, because spaces are valid characters.
@@ -473,7 +474,7 @@ Two observations from that run, not yet decisions: a Spanish question about an E
 > **Decision: a closed browser drops its question.** The controller turns the connection closing before the response into an `AbortSignal`: a question still in line leaves it, and one being answered aborts its Ollama request, which stops the generation. The model never works for nobody.
 
 > [!NOTE]
-> **Decision: 10 questions per minute and 30 per day, counted when accepted.** The per-minute limit is counted in memory per user (`rateLimitMiddleware` with the new `keyBy: "user"`), for every request. The daily limit was lowered from the brief's 50 to 30, counted in `question_usage` over the last 24 hours, like uploads; going over answers 429. A question counts when it is accepted, before the model is asked, which is safe when two requests arrive together, because the user's row is locked while counting. Since the third review it is given back when no answer came (see [section 18](#18-third-review-independent-audit)). Rejected questions (invalid, not found, not ready, busy) are not counted.
+> **Decision: 10 questions per minute and 30 per day, counted when accepted.** The per-minute limit is counted in memory per user (`rateLimitMiddleware` with the new `keyBy: "user"`), for every request. The daily limit was lowered from the brief's 50 to 30, counted in `question_usage` over the last 24 hours, like uploads; going over answers 429. A question counts when it is accepted, before the model is asked, which is safe when two requests arrive together, because the user's row is locked while counting. Since the third review it is given back when no answer came (see [section 18](#18-third-review-independent-audit)), and since the fourth, not when the browser leaves while the model is answering (see [section 19](#19-fourth-review-owasp-audit)). Rejected questions (invalid, not found, not ready, busy) are not counted.
 
 > [!NOTE]
 > **Decision: a broken structured reply means "not enough evidence".** In structured mode the model must return `{"answerable": ..., "answer": ...}` with citations of fragments it received. When the reply breaks that contract (no citation, an invented one, an empty answer, or no JSON), the API answers `insufficient_evidence` with the fallback sentence instead of an error: an answer that cannot be checked should not be shown. Only the reason is logged, never the reply, which may quote the user's document.
@@ -584,7 +585,8 @@ The enforced values can be changed in `.env` (see `.env.example`); in Docker, in
 | Uploads per user | 3 per day (last 24 hours, deleted documents included) |
 | Document size | 200,000 characters |
 | Upload requests per user | 5 per minute |
-| Questions per user | 10 per minute, 30 per day, 1 at a time, given back when unanswered |
+| Requests per user to the protected routes | 120 per minute, on top of each route's own limits |
+| Questions per user | 10 per minute, 30 per day, 1 at a time, given back when unanswered, unless the user left while the model was answering |
 | Question length | 1,000 characters |
 | One question, in total | 60 seconds, with 20 questions waiting at most |
 | Event streams | 2 per user, 4 per address, 30 in total |
@@ -641,7 +643,7 @@ Already fine: every query is parameterized and filtered by its owner, the domain
 | A5 | The queue decided to retry by looking at an HTTP status (503) | `ModelUnavailableError` | `jobQueue.test.ts` |
 | A7 | The list of user columns was duplicated in two services | Exported once from `users.service.ts` | existing auth tests |
 
-Deferred, and listed in [Pending work](#19-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
+Deferred, and listed in [Pending work](#20-pending-work): S5, `/v1/health` has no rate limit; S7, no graceful shutdown; S8, CORS accepts every origin; A6, the services depend on the concrete Ollama and `pg` clients, without interfaces. SQL in the services is a documented choice and everything about Ollama lives in one file, so interfaces would only pay off with a second model provider. A8, configuration read from `process.env` when a module is imported (the reason tests import the app dynamically), is acceptable for a single app and stays.
 
 > [!NOTE]
 > **Decision: 3 uploads per user per day.** The quotas did not stop a loop of upload and delete, because deleting frees the slot, and every upload makes Ollama work. Accepted uploads are recorded in their own table, `upload_usage` (migration `002`), because deleting a document deletes its row. The limit counts the last 24 hours (a rolling window, like the planned question quota), the cleanup removes older rows, and only accepted uploads count, so a rejected one costs nothing. Going over answers 429, because it is a rate over time; the document and indexing quotas stay 409 and are checked first. The review proposed 10 per hour with the in-memory rate limiter; a count in the database, with the same value as the document limit, was chosen instead: it survives restarts and `GET /v1/users/me` can show it (`usage.uploadsToday`). Configurable with `MAX_UPLOADS_PER_DAY`.
@@ -706,9 +708,37 @@ With them, two pending items were done: the graceful shutdown (S7: `closeServerG
 > [!NOTE]
 > **Decision: no email verification.** Opening many accounts to take shared capacity (streams, queue) is slowed by the per-address limits, which work now, and will be by Turnstile on registration. Verifying emails would stop it better but needs mail sending; not for the proof of concept.
 
-## 19. Pending work
+## 19. Fourth review: OWASP audit
 
-- **OWASP audit:** run `owasp-auditor` once from a new conversation as a starting point, together with `npm audit`, and again after each new layer before merging (the admin statistics first, since it adds an admin endpoint).
+On 2026-10-18 the `owasp-auditor` agent went through the OWASP API Security Top 10 (2023) and the OWASP Top 10 for LLM Applications (2025), started from a new conversation so that nothing from the development reached its prompt. It found nothing critical or high: 2 medium, 6 low and 4 informational findings. Object level authorization, property level authorization, function level authorization, SSRF, excessive agency, system prompt leakage and cross-user poisoning all met the checklist. As with the third review, each finding was checked against the code before deciding, and each fix has a test that fails without it.
+
+| # | Finding | Decision | Test |
+|---|---|---|---|
+| O1 | The daily question quota was given back whenever there was no answer, also when the browser left while the model was answering: asking and cancelling just before the answer kept the model busy for free | Fixed: the question is given back only when the model never started (the browser left while it waited) or the failure was the server's (Ollama down, too slow) | `questions.test.ts` |
+| O2 | Accounts are cheap to create, and many accounts can fill the shared pools (streams, questions waiting, queue) | Turnstile on registration, already pending with the frontend | none |
+| O3 | Answers, passages and filenames are returned as raw text, which may contain markup planted in a document | The frontend renders them as text; already in the brief | none |
+| O4 | A baseline answer with no valid citation is still `answered` | The frontend marks an `answered` answer with empty `citations` as not backed by any passage (brief) | none |
+| O5 | scrypt with `N = 2^14, r = 8, p = 1`, under OWASP's recommendation | Fixed with `p = 5` (see the note below); hashes made before are replaced at the next successful login | `password.test.ts`, `auth.test.ts` |
+| O6 | The protected `GET` and `DELETE` routes had no rate limit, so one account could take the 10 database connections with a flood of requests | Fixed: 120 requests per minute per user across every protected route, on top of each route's own limits | `requestsRateLimit.test.ts` |
+| O7 | `http://localhost:5173` is allowed by CORS in production | Kept: exploiting it needs code running on that port of the victim's own computer, and tokens travel in a header; development and production are the same laptop, so a separate override file would not help | none |
+| O8 | A prompt with text that takes one token per character (Chinese, Japanese) could pass the 8,192-token context, and Ollama would cut its beginning | Pending (idea), low confidence; it would only spoil answers about the user's own document | none |
+| O9 | A zero vector would make the similarity `NaN`, which passes the threshold in PostgreSQL | Not fixed: the vectors come from Ollama, not from the user, and the search stays inside the user's own document | none |
+| O10 | Registration reveals which emails have an account (409) | Kept: the earlier decision, limited to 20 attempts per hour per address | none |
+| O11 | Images and models are pinned by tag, not by digest | Kept: digests would also freeze out security updates until changed by hand; `cloudflared` is pinned by version | none |
+| O12 | Tokens cannot be revoked, and the role is taken from the token | To do in the admin statistics layer: `authorizeMiddleware` reads the role from the database for admin routes | none |
+
+> [!NOTE]
+> **Decision: a question counts once the model has started.** This narrows the rule of the third review, "no answer means no count". The model's time is the scarce resource, so once a question has reached it, the browser leaving no longer gives it back. It is still given back when the user did nothing wrong: the turn did not come in time, Ollama was down or too slow, or the browser left while the question was still waiting for its turn.
+
+> [!NOTE]
+> **Decision: scrypt with `p = 5`, not `N = 2^17`.** OWASP lists several equivalent scrypt settings. Its first one, `N = 2^17`, needs 128 MiB of memory per hash: Node computes up to four at once, so four logins together would take the whole 512 MB the container has, and the container would be killed. `N = 2^14, r = 8, p = 5` keeps today's 16 MiB per hash and makes each one five times more work to crack (about 430 ms instead of 100 ms on this laptop, paid on each registration and login). Hashes made with `p = 1` keep working, and a successful login replaces them, so their logins stop being faster than an unknown email's (the dummy hash uses the current parameters).
+
+> [!NOTE]
+> **Decision: one limit for every protected route.** 120 requests per minute per user, counted in memory after authentication, in `v1.routes.ts`. Reading a job every 2 or 3 seconds is 30 per minute, so a browser never comes near it; it only stops one account from flooding the database pool. Public routes keep their own limits.
+
+## 20. Pending work
+
+- **OWASP audit after each layer:** run `owasp-auditor` from a new conversation, together with `npm audit`, after each new layer and before merging it (the admin statistics first, since it adds an admin endpoint).
 - **Next step:** the frontend at `rag.diegodebrun.com` on Cloudflare Pages: text extraction in the browser with pdf.js and mammoth, the live events, and Turnstile on registration. `CORS_ORIGINS` already allows its address.
 - **Frontend and the event stream:** read it with `fetch()` and the token in the header; open it only while a document is being indexed or a question is waiting, and close it afterwards; reconnect when it drops, after reading `GET /v1/jobs/:id`; ignore a `queued` event that arrives after `started` for the same job (two messages sent at almost the same moment can arrive in that order); with a quick Cloudflare tunnel, which does not support SSE, read `GET /v1/jobs/:id` every 2 or 3 seconds instead.
 - **Models unloaded after 5 idle minutes:** Ollama's default. Reloading both takes about 8 seconds (3 for the embedding model, 5 for the answer model), so the first question after a pause waits that long. A longer `keep_alive` would avoid it, at the cost of keeping 4.6 GB of video memory while the laptop is used for other things; left as it is.
@@ -718,8 +748,9 @@ With them, two pending items were done: the graceful shutdown (S7: `closeServerG
 - **Model provider interfaces (A6):** only if a second provider appears, such as the cloud model the brief mentions as an idea.
 - **Health with the database down:** `checkDatabase` reports `down` when the query fails or the 5-second connection timeout passes, but no automated test covers that case yet.
 - **Ownership tests (required in the documents and questions layers):** user B must get a 404, never another user's data, for `GET` and `DELETE /documents/:id`, `POST /documents/:id/ask` and `GET /jobs/:id` on user A's resources; `GET /documents` lists only the caller's documents; the SSE stream sends only the caller's job events. The services also have to create jobs only for documents already checked to belong to the caller, since the schema does not enforce that a job and its document share an owner.
-- **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `upload_usage` and `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles.
+- **Admin statistics (after the documents and questions layers):** users registered, documents uploaded and questions asked per day, through `GET /v1/admin/stats` protected with `authorizeMiddleware(["admin"])`. Documents are deleted after 24 hours and old `upload_usage` and `question_usage` rows are purged, so the counts need their own table (for example `daily_stats`: date, metric, count) incremented in the same transaction as each action and never touched by the cleanup task. It keeps only counts, no content and no user data. Admins are promoted by hand in SQL; there is no endpoint that changes roles. For admin routes, `authorizeMiddleware` should read the role from the database instead of trusting the token, so a demoted or deleted admin loses access at once instead of when the token expires (O12).
+- **Prompts past the model's context (O8, idea):** up to nine 1,000-character passages, the filename and the question fit easily in English, but text that takes one token per character (Chinese, Japanese) could pass the 8,192 tokens and Ollama would cut the start of the prompt. Estimate the tokens and drop neighbor passages until it fits; check first with such a document.
 - **Tiny last chunks (idea):** the last chunk of a document can be very short and match questions unreliably; merging it into the previous chunk when it is under about 200 characters would avoid that.
-- **Turnstile on registration:** Cloudflare's mostly invisible bot check on `POST /v1/auth/register` (a middleware that verifies the browser's token with a secret key from `.env`), done together with the frontend's registration form. It slows down anyone creating accounts in bulk to take shared capacity (F4).
+- **Turnstile on registration:** Cloudflare's mostly invisible bot check on `POST /v1/auth/register` (a middleware that verifies the browser's token with a secret key from `.env`), done together with the frontend's registration form. It slows down anyone creating accounts in bulk to take shared capacity (F4, O2).
 - **Updating `cloudflared`:** change the pinned image version every few months, then `docker compose up -d`.
 - **Evaluation:** measure the Spanish prompts and the adjusted citation rule once the question endpoint works.

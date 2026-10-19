@@ -27,6 +27,7 @@ People register, upload a document (PDF, Word or plain text), and ask questions 
 - Success: `{ "success": true, "message": "...", "data": ... }`. Login and register also return `token` at the top level, next to `data`.
 - Error: `{ "message": "..." }`. Validation errors (400) add `"details": ["Email is required", ...]`, one string per problem.
 - Dates are ISO strings, for example `"2026-10-18T02:39:40.000Z"`.
+- Every protected endpoint allows **120 requests per minute per user** in total (429), on top of its own limits below. Polling a job every 2 or 3 seconds stays far below it.
 
 | Status | Meaning |
 |---|---|
@@ -180,10 +181,10 @@ The answer comes **in the same response**, usually within a second, at most 60 s
 ```
 
 - `status`: `answered`; `insufficient_evidence` (the model said the document does not answer it; `answer` is a fixed sentence); or `no_match` (nothing in the document was close to the question; the model was not asked).
-- `[F1]`, `[F2]` in the answer refer to `sources` by `id`. Make them clickable or highlighted to show the passage. `citations` lists the ids that really exist; an invented id may stay in a baseline answer's text but not in `citations`.
+- `[F1]`, `[F2]` in the answer refer to `sources` by `id`. Make them clickable or highlighted to show the passage. `citations` lists the ids that really exist; an invented id may stay in a baseline answer's text but not in `citations`. An `answered` baseline answer with an empty `citations` is not backed by any passage: mark it, for example "No sources cited", so it is not read as grounded.
 - `sources` are every passage the model saw: `retrieval: "match"` (with a similarity `score`) or `"neighbor"` (the text around a match).
 - While waiting, the stream sends `question_queued` with a position ("2 questions before yours") and then `question_started` ("thinking").
-- Limits: **one question at a time per user** (409 "You already have a question waiting for an answer"), 10 per minute and **30 per day** (429; `usage.questionsToday` in `GET /users/me`). A question that gets no answer (503, 504, or the user leaving) does not count.
+- Limits: **one question at a time per user** (409 "You already have a question waiting for an answer"), 10 per minute and **30 per day** (429; `usage.questionsToday` in `GET /users/me`). A question that gets no answer (503, 504, or the user leaving before the model started) does not count; once the model has started answering, leaving does not give it back.
 - Errors: 404 (not the user's document), 409 (document not ready), 503 "The server is busy, please try again in a few minutes" or "The model server is not available", 504 "The model server did not answer in time".
 
 ## When the laptop is off

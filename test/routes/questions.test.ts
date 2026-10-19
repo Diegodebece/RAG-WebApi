@@ -532,6 +532,21 @@ describe("POST /v1/documents/:id/ask: the turn with the model", () => {
         assert.equal(await countQuestions(bob.id), 0, "and went back to his daily limit");
     });
 
+    it("still counts a question whose browser disconnected while the model was answering", async () => {
+        chatDelayMs = 400;
+        chatReply = "Answer [F1].";
+        const ana = await createTestUser("ana@example.com");
+        const documentId = await createDocument(ana.id);
+
+        // the client gives up while the model is answering, after using its time
+        await assert.rejects(ask(ana.auth, documentId).timeout(150));
+        await sleep(400);
+
+        assert.equal(chatRequests().length, 1, "the model was asked");
+        assert.equal(await countQuestions(ana.id), 1, "the question is not given back");
+        assert.equal((await ask(ana.auth, documentId)).status, 200, "and the user can ask again");
+    });
+
     it("lets a question in between the batches of a document being indexed", async () => {
         const ana = await createTestUser("ana@example.com");
         const bob = await createTestUser("bob@example.com");
