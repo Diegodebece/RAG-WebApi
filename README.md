@@ -1,5 +1,8 @@
 # RAG-WebApi
 
+
+**Demo here:** https://rag.diegodebrun.com
+
 Self-hosted RAG API: upload a document, ask questions about it, get answers that cite the passages they come from. Built with Express and TypeScript, PostgreSQL with pgvector, Docker, and local Ollama models, so it runs for free on one laptop.
 
 ## About this project
